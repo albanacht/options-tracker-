@@ -5,6 +5,7 @@ const TABS = [
   { id: 'risk',      label: 'Capital at risk',icon: 'ti-shield' },
   { id: 'charts',    label: 'Charts',         icon: 'ti-chart-bar' },
   { id: 'watchlist', label: 'Watchlist',      icon: 'ti-list' },
+  { id: 'ev',        label: 'EV / Edge',      icon: 'ti-math-function' },
 ];
 
 function App() {
@@ -131,7 +132,8 @@ function App() {
     tab === 'wheel'     && h(WheelCycles,   { trades, prices, onUpdateTrade: saveTrade, onAddTrade: addTrade }),
     tab === 'risk'      && h(CapitalRisk,    { trades, prices }),
     tab === 'charts'    && h(Charts,         { trades, prices }),
-    tab === 'watchlist' && h(Watchlist,      { watchlist, setWatchlist, prices, loadingPrices: loading, refresh: doFetchPrices })
+    tab === 'watchlist' && h(Watchlist,      { watchlist, setWatchlist, prices, loadingPrices: loading, refresh: doFetchPrices }),
+    tab === 'ev'        && h(EVCalculator,   { trades })
   );
 }
 
