@@ -1,5 +1,3 @@
-const { createElement: h, useState: useStateWL } = React;
-
 const QUICK_TICKERS = ['GOOG','GOOGL','QCOM','NVO','VZ','ARE','CRM','NEM','SCHD','VOO','O','BTI','ADM','WPC','JPM','AAPL','UNH','NVDA'];
 
 function Watchlist({ watchlist, setWatchlist, prices, loadingPrices, refresh }) {
