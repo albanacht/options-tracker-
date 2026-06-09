@@ -1,5 +1,3 @@
-const { createElement: h, useState, useMemo } = React;
-
 function TradeForm({ onSave, initial, onCancel }) {
   const [t, setT] = useState(initial || {
     dateOpened: todayStr(), ticker: '', strategy: 'Naked Put', putCall: 'P',
