@@ -1,5 +1,3 @@
-const { createElement: h, useState: useStateWC, useMemo: useMemoWC } = React;
-
 function GanttChart({ trades }) {
   const relevant = trades.filter(t =>
     t.outcome === 'Assigned' || t.strategy === 'Covered Call' ||
