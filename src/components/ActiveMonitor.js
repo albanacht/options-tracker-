@@ -1,5 +1,3 @@
-const { createElement: h, useState: useStateAM } = React;
-
 function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateTrade }) {
   const [closing, setClosing] = useStateAM(null);
   const open = trades.filter(t => t.outcome === 'Open');
