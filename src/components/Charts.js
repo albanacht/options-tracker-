@@ -1,5 +1,3 @@
-const { createElement: h, useEffect: useEffectC, useRef: useRefC, useMemo: useMemoC } = React;
-
 function Charts({ trades, prices }) {
   const lineRef = useRefC(null);
   const barRef  = useRefC(null);
