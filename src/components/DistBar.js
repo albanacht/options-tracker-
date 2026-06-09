@@ -1,5 +1,3 @@
-const { createElement: h } = React;
-
 function DistBar({ t, price }) {
   if (!price || !t.strike1) return null;
   const s1 = parseFloat(t.strike1);
