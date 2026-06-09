@@ -1,5 +1,3 @@
-const { createElement: h } = React;
-
 function CapitalRisk({ trades, prices }) {
   const open     = trades.filter(t => t.outcome === 'Open');
   const assigned = trades.filter(t => t.outcome === 'Assigned');
