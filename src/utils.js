@@ -95,3 +95,22 @@ const Store = {
 function distCol(pct) {
   return pct > 0.15 ? '#3b6d11' : pct > 0.05 ? '#854f0b' : '#a32d2d';
 }
+
+// ── Global React shorthands (used by all components) ───────────
+const h         = React.createElement;
+const useState  = React.useState;
+const useEffect = React.useEffect;
+const useCallback = React.useCallback;
+const useMemo   = React.useMemo;
+const useRef    = React.useRef;
+
+// ── Aliased hooks to avoid re-declaration conflicts ────────────
+const useStateWC  = React.useState;
+const useMemoWC   = React.useMemo;
+const useStateWL  = React.useState;
+const useStateAM  = React.useState;
+const useStateWB  = React.useState;
+const useEffectC  = React.useEffect;
+const useMemoC    = React.useMemo;
+const useRefC     = React.useRef;
+const useState2   = React.useState;
