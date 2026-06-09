@@ -1,5 +1,3 @@
-const { createElement: h, useState: useState2 } = React;
-
 function CloseModal({ trade, onClose, onSave }) {
   const [price, setPrice] = useState2('');
   const [outcome, setOutcome] = useState2(
