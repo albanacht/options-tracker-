@@ -1,5 +1,3 @@
-const { createElement: h, useState, useEffect, useCallback, useMemo } = React;
-
 const TABS = [
   { id: 'monitor',   label: 'Monitor',       icon: 'ti-eye' },
   { id: 'logger',    label: 'Log trade',      icon: 'ti-plus' },
