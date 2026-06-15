@@ -69,16 +69,29 @@ function calcMetrics(t) {
 }
 
 // ── Price fetch via allorigins proxy (Yahoo Finance) ───────────
+async function fetchOneTicker(ticker) {
+  const hosts = ['query1', 'query2'];
+  for (const host of hosts) {
+    try {
+      const url = `https://${host}.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=5d`;
+      const r = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(url), { signal: AbortSignal.timeout(6000) });
+      if (!r.ok) continue;
+      const d = await r.json();
+      const meta = d?.chart?.result?.[0]?.meta;
+      if (!meta) continue;
+      // prefer live price, fall back to previous close
+      const price = meta.regularMarketPrice || meta.previousClose || meta.chartPreviousClose;
+      if (price && price > 0) return price;
+    } catch (_) {}
+  }
+  return null;
+}
+
 async function fetchPrices(tickers) {
   const results = {};
   await Promise.all(tickers.map(async ticker => {
-    try {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=1d`;
-      const r = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(url));
-      const d = await r.json();
-      const p = d?.chart?.result?.[0]?.meta?.regularMarketPrice;
-      if (p) results[ticker] = p;
-    } catch (_) {}
+    const price = await fetchOneTicker(ticker);
+    if (price) results[ticker] = price;
   }));
   return results;
 }
