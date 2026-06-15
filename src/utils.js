@@ -68,31 +68,44 @@ function calcMetrics(t) {
   return { cap, maxLoss, be, roc, annR, bec, pnl, actAnn, isSpread };
 }
 
-// ── Price fetch via allorigins proxy (Yahoo Finance) ───────────
-async function fetchOneTicker(ticker) {
-  const hosts = ['query1', 'query2'];
-  for (const host of hosts) {
+// ── Price fetch — batch call via corsproxy.io ─────────────────
+async function fetchPrices(tickers) {
+  if (!tickers.length) return {};
+  const results = {};
+
+  // Try batch fetch first — all tickers in one request
+  try {
+    const symbols = tickers.join(',');
+    const url = 'https://query1.finance.yahoo.com/v7/finance/quote?symbols=' + encodeURIComponent(symbols) + '&fields=regularMarketPrice,previousClose';
+    const proxied = 'https://corsproxy.io/?' + encodeURIComponent(url);
+    const r = await fetch(proxied, { signal: AbortSignal.timeout(8000) });
+    if (r.ok) {
+      const d = await r.json();
+      const quotes = d?.quoteResponse?.result || [];
+      quotes.forEach(q => {
+        const price = q.regularMarketPrice || q.previousClose;
+        if (price && price > 0) results[q.symbol] = price;
+      });
+      // If we got all tickers, return immediately
+      if (tickers.every(t => results[t])) return results;
+    }
+  } catch (_) {}
+
+  // Fallback — fetch missing tickers individually via allorigins
+  const missing = tickers.filter(t => !results[t]);
+  await Promise.all(missing.map(async ticker => {
     try {
-      const url = `https://${host}.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=5d`;
+      const url = 'https://query2.finance.yahoo.com/v8/finance/chart/' + ticker + '?interval=1d&range=2d';
       const r = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(url), { signal: AbortSignal.timeout(6000) });
-      if (!r.ok) continue;
+      if (!r.ok) return;
       const d = await r.json();
       const meta = d?.chart?.result?.[0]?.meta;
-      if (!meta) continue;
-      // prefer live price, fall back to previous close
+      if (!meta) return;
       const price = meta.regularMarketPrice || meta.previousClose || meta.chartPreviousClose;
-      if (price && price > 0) return price;
+      if (price && price > 0) results[ticker] = price;
     } catch (_) {}
-  }
-  return null;
-}
-
-async function fetchPrices(tickers) {
-  const results = {};
-  await Promise.all(tickers.map(async ticker => {
-    const price = await fetchOneTicker(ticker);
-    if (price) results[ticker] = price;
   }));
+
   return results;
 }
 
