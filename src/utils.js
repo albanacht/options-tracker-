@@ -68,40 +68,22 @@ function calcMetrics(t) {
   return { cap, maxLoss, be, roc, annR, bec, pnl, actAnn, isSpread };
 }
 
-// ── Price fetch — batch call via corsproxy.io ─────────────────
+// ── Price fetch via Finnhub (fast, no proxy needed) ───────────
+const FINNHUB_KEY = 'd8nsp69r01qvvn9b07p0d8nsp69r01qvvn9b07pg';
+
 async function fetchPrices(tickers) {
   if (!tickers.length) return {};
   const results = {};
 
-  // Try batch fetch first — all tickers in one request
-  try {
-    const symbols = tickers.join(',');
-    const url = 'https://query1.finance.yahoo.com/v7/finance/quote?symbols=' + encodeURIComponent(symbols) + '&fields=regularMarketPrice,previousClose';
-    const proxied = 'https://corsproxy.io/?' + encodeURIComponent(url);
-    const r = await fetch(proxied, { signal: AbortSignal.timeout(8000) });
-    if (r.ok) {
-      const d = await r.json();
-      const quotes = d?.quoteResponse?.result || [];
-      quotes.forEach(q => {
-        const price = q.regularMarketPrice || q.previousClose;
-        if (price && price > 0) results[q.symbol] = price;
-      });
-      // If we got all tickers, return immediately
-      if (tickers.every(t => results[t])) return results;
-    }
-  } catch (_) {}
-
-  // Fallback — fetch missing tickers individually via allorigins
-  const missing = tickers.filter(t => !results[t]);
-  await Promise.all(missing.map(async ticker => {
+  // Fetch all tickers in parallel — Finnhub allows direct browser calls
+  await Promise.all(tickers.map(async ticker => {
     try {
-      const url = 'https://query2.finance.yahoo.com/v8/finance/chart/' + ticker + '?interval=1d&range=2d';
-      const r = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(url), { signal: AbortSignal.timeout(6000) });
+      const url = `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${FINNHUB_KEY}`;
+      const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
       if (!r.ok) return;
       const d = await r.json();
-      const meta = d?.chart?.result?.[0]?.meta;
-      if (!meta) return;
-      const price = meta.regularMarketPrice || meta.previousClose || meta.chartPreviousClose;
+      // c = current price, pc = previous close
+      const price = d.c > 0 ? d.c : d.pc;
       if (price && price > 0) results[ticker] = price;
     } catch (_) {}
   }));
