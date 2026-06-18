@@ -47,6 +47,7 @@ function TradeForm({ onSave, initial, onCancel }) {
       field('Contracts', 'contracts', 'number', { placeholder: '1' }),
       field('Underlying at entry', 'underlyingAtEntry', 'number', { step: '0.01' }),
       field('IV/HV ratio', 'ivhv', 'number', { step: '0.01', placeholder: '1.5' }),
+      field('IV % at entry (e.g. 0.35)', 'iv', 'number', { step: '0.01', placeholder: '0.35' }),
       field('Delta', 'delta', 'number', { step: '0.01', placeholder: '0.15' }),
       field('Premium received ($)', 'premiumReceived', 'number', { step: '0.01' })
     ),
