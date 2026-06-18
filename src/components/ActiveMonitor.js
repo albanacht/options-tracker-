@@ -3,6 +3,23 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
   const open = trades.filter(t => t.outcome === 'Open');
   const tod  = today();
 
+  // ── Black-Scholes helpers ──────────────────────────────────────
+  function normCDF(x) {
+    const a1=0.254829592,a2=-0.284496736,a3=1.421413741,a4=-1.453152027,a5=1.061405429,p=0.3275911;
+    const sign = x < 0 ? -1 : 1;
+    x = Math.abs(x) / Math.sqrt(2);
+    const t = 1 / (1 + p * x);
+    const y = 1 - (((((a5*t+a4)*t)+a3)*t+a2)*t+a1)*t*Math.exp(-x*x);
+    return 0.5 * (1 + sign * y);
+  }
+  function bsPrice(S, K, T, r, sigma, isPut) {
+    if (!S || !K || T <= 0 || !sigma) return null;
+    const d1 = (Math.log(S/K) + (r + 0.5*sigma*sigma)*T) / (sigma*Math.sqrt(T));
+    const d2 = d1 - sigma*Math.sqrt(T);
+    if (isPut) return K*Math.exp(-r*T)*normCDF(-d2) - S*normCDF(-d1);
+    return S*normCDF(d1) - K*Math.exp(-r*T)*normCDF(d2);
+  }
+
   if (!open.length) return h('div', { className: 'empty' },
     h('i', { className: 'ti ti-eye', 'aria-hidden': true }),
     h('div', null, 'No open positions'),
@@ -43,7 +60,13 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
         livePnl = (prem - optVal) * 100 * con;
       }
 
-      // Alert level
+      // BS estimated current option price
+      const iv     = parseFloat(t.iv) || null;
+      const T      = dLeft > 0 ? dLeft / 365 : null;
+      const r      = 0.053;
+      const bsEst  = (price && iv && T) ? bsPrice(price, s1, T, r, iv, t.putCall === 'P') : null;
+      const origPrem = parseFloat(t.premiumReceived) || 0;
+      const takeProfitFlag = bsEst != null && origPrem > 0 && bsEst <= origPrem * 0.2;
       const alertCls = isItm ? 'pos-card card alert-red'
         : (dLeft != null && dLeft <= 5) || (dist != null && dist < 0.03) ? 'pos-card card alert-red'
         : dist != null && dist < 0.08 ? 'pos-card card alert-amber'
@@ -70,50 +93,49 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
             dLeft != null && h('span', {
               className: 'badge ' + (dLeft <= 5 ? 'badge-red' : dLeft <= 14 ? 'badge-amber' : 'badge-green')
             }, dLeft + 'd left'),
-            dLeft != null && h('span', {
-              className: 'badge badge-gray',
-              title: 'Expiration date'
-            }, t.expiry),
-            livePnl != null && h('span', {
+            takeProfitFlag && h('span', {
+              className: 'badge badge-green',
+              title: 'Estimated option value ≤ 20% of premium — consider closing',
+              style: { fontWeight: 700 }
+            }, '✓ Take profit'),
               className: 'badge ' + (livePnl >= 0 ? 'badge-green' : 'badge-red')
             }, (livePnl >= 0 ? '+' : '') + f$(livePnl)),
             h('span', { className: 'rocp' }, fp(m.annR) + ' ann.')
           )
         ),
 
-        // ── THE MAIN PRICE vs STRIKE DISPLAY ──────────────────
         h('div', {
           style: {
             display: 'grid',
-            gridTemplateColumns: '1fr auto 1fr',
+            gridTemplateColumns: '1fr auto 1fr auto',
             alignItems: 'center',
-            gap: 12,
+            gap: 8,
             background: 'var(--bg2)',
             borderRadius: 10,
-            padding: '12px 16px',
+            padding: '8px 12px',
             marginBottom: 12
           }
         },
           // Strike
           h('div', { style: { textAlign: 'center' } },
-            h('div', { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 3 } }, 'STRIKE'),
-            h('div', { style: { fontSize: 28, fontWeight: 700, color: 'var(--text)', letterSpacing: '-0.5px' } },
+            h('div', { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 2 } }, 'STRIKE'),
+            h('div', { style: { fontSize: 24, fontWeight: 700, color: 'var(--text)', letterSpacing: '-0.5px' } },
               f$(s1, 2)),
-            t.strike2 && h('div', { style: { fontSize: 13, color: 'var(--text2)', marginTop: 2 } },
+            t.strike2 && h('div', { style: { fontSize: 12, color: 'var(--text2)', marginTop: 1 } },
               '/ ' + f$(parseFloat(t.strike2), 2))
           ),
 
           // Arrow + distance
-          h('div', { style: { textAlign: 'center' } },
+          h('div', { style: { textAlign: 'center', padding: '0 4px' } },
             price
               ? h('div', null,
                   h('div', {
                     style: {
-                      fontSize: 13, fontWeight: 600,
+                      fontSize: 12, fontWeight: 600,
                       color: priceCol,
                       background: isItm ? '#fcebeb' : dist < 0.05 ? '#faeeda' : '#eaf3de',
-                      padding: '4px 10px', borderRadius: 20,
-                      marginBottom: 4, whiteSpace: 'nowrap'
+                      padding: '3px 8px', borderRadius: 20,
+                      marginBottom: 3, whiteSpace: 'nowrap'
                     }
                   }, isItm ? '⚠ ITM' : (dist * 100).toFixed(1) + '% away'),
                   h('div', { style: { fontSize: 10, color: 'var(--text3)' } },
@@ -124,12 +146,25 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
 
           // Current price
           h('div', { style: { textAlign: 'center' } },
-            h('div', { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 3 } }, 'CURRENT PRICE'),
+            h('div', { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 2 } }, 'CURRENT PRICE'),
             price
-              ? h('div', { style: { fontSize: 28, fontWeight: 700, color: priceCol, letterSpacing: '-0.5px' } },
+              ? h('div', { style: { fontSize: 24, fontWeight: 700, color: priceCol, letterSpacing: '-0.5px' } },
                   f$(price, 2))
               : h('div', { style: { fontSize: 16, color: 'var(--text3)', fontWeight: 500 } }, 'Loading…'),
-            h('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 2 } }, 'via Yahoo Finance')
+            h('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 1 } }, 'via Finnhub')
+          ),
+
+          // Estimated option price (BS)
+          h('div', { style: { textAlign: 'center', borderLeft: '1px solid var(--border)', paddingLeft: 12 } },
+            h('div', { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 2 } }, 'EST. OPTION'),
+            bsEst != null
+              ? h('div', null,
+                  h('div', { style: { fontSize: 20, fontWeight: 700, color: takeProfitFlag ? '#27500a' : 'var(--text)', letterSpacing: '-0.5px' } },
+                    f$(bsEst, 2)),
+                  h('div', { style: { fontSize: 10, color: 'var(--text3)', marginTop: 1 } },
+                    fp(bsEst / origPrem) + ' of prem')
+                )
+              : h('div', { style: { fontSize: 12, color: 'var(--text3)' } }, iv ? '—' : 'add IV%')
           )
         ),
 
@@ -144,10 +179,6 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
           h('div', null, h('span', { className: 'pos-stat-label' }, 'BE cushion '),
             h('strong', { style: { color: m.bec > 0.1 ? '#27500a' : m.bec > 0.05 ? '#854f0b' : '#a32d2d' } },
               m.bec > 0 ? fp(m.bec) : '—')),
-          h('div', null,
-            h('span', { className: 'pos-stat-label' }, 'Θ est./day '),
-            h('strong', { style: { color: '#27500a' } },
-              dLeft > 0 ? '+' + f$(prem100 / dLeft, 2) : '—')),
           h('div', null,
             h('span', { className: 'pos-stat-label' }, '50% target '),
             h('strong', null, f$(prem100 * 0.5), h('span', { style: { color: 'var(--text2)', fontWeight: 400 } }, ' → buy back at ' + f$((parseFloat(t.premiumReceived)||0)*0.5, 2)))),
