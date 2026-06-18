@@ -93,11 +93,16 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
             dLeft != null && h('span', {
               className: 'badge ' + (dLeft <= 5 ? 'badge-red' : dLeft <= 14 ? 'badge-amber' : 'badge-green')
             }, dLeft + 'd left'),
+            dLeft != null && h('span', {
+              className: 'badge badge-gray',
+              title: 'Expiration date'
+            }, t.expiry),
             takeProfitFlag && h('span', {
               className: 'badge badge-green',
               title: 'Estimated option value ≤ 20% of premium — consider closing',
               style: { fontWeight: 700 }
             }, '✓ Take profit'),
+            livePnl != null && h('span', {
               className: 'badge ' + (livePnl >= 0 ? 'badge-green' : 'badge-red')
             }, (livePnl >= 0 ? '+' : '') + f$(livePnl)),
             h('span', { className: 'rocp' }, fp(m.annR) + ' ann.')
@@ -179,6 +184,10 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
           h('div', null, h('span', { className: 'pos-stat-label' }, 'BE cushion '),
             h('strong', { style: { color: m.bec > 0.1 ? '#27500a' : m.bec > 0.05 ? '#854f0b' : '#a32d2d' } },
               m.bec > 0 ? fp(m.bec) : '—')),
+          h('div', null,
+            h('span', { className: 'pos-stat-label' }, 'Θ est./day '),
+            h('strong', { style: { color: '#27500a' } },
+              dLeft > 0 ? '+' + f$(prem100 / dLeft, 2) : '—')),
           h('div', null,
             h('span', { className: 'pos-stat-label' }, '50% target '),
             h('strong', null, f$(prem100 * 0.5), h('span', { style: { color: 'var(--text2)', fontWeight: 400 } }, ' → buy back at ' + f$((parseFloat(t.premiumReceived)||0)*0.5, 2)))),
