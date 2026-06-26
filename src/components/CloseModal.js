@@ -50,7 +50,10 @@ function ResolveBanner({ trades, prices, onResolve }) {
   const expired = trades.filter(t => {
     if (t.outcome !== 'Open') return false;
     const exp = fd(t.expiry);
-    return exp && exp <= today();
+    // Only flag once expiry has fully passed — wait until the day after
+    // so we use a settled closing price, not an intraday quote while
+    // the market is still open on expiry day itself.
+    return exp && exp < today();
   });
 
   if (!expired.length) return null;
