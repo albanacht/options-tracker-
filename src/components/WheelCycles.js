@@ -1,80 +1,20 @@
-function legColor(t) {
-  if (t.outcome === 'Assigned') return '#185fa5';
-  if (t.strategy === 'Covered Call') return '#1d9e75';
-  if (t.outcome === 'Open') return '#ef9f27';
-  if (t.outcome === 'Expired Worthless' || t.outcome === 'Bought Back' || t.outcome === 'Closed Profit') return '#7ab648';
-  if (t.outcome === 'Closed Loss' || t.outcome === 'Max Loss') return '#d65c5c';
-  return '#9196b0';
-}
-function legLabel(t) {
-  if (t.outcome === 'Assigned') return 'Put';
-  if (t.strategy === 'Covered Call') return 'CC';
-  if (t.strategy && t.strategy.includes('Spread')) return 'Spr';
-  if (t.putCall === 'P') return 'Put';
-  if (t.putCall === 'C') return 'Call';
-  return '';
-}
-
-function getMonday(d) {
-  const date = new Date(d);
-  const day = date.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  date.setDate(date.getDate() + diff);
-  date.setHours(0, 0, 0, 0);
-  return date;
-}
-
 function GanttChart({ trades }) {
-  const relevant = trades.filter(t => t.dateOpened && t.ticker);
-  const tickers = [...new Set(relevant.map(t => t.ticker))].filter(Boolean);
-
-  if (!tickers.length) return h('div', { style: { fontSize: 11, color: 'var(--text2)' } }, 'No trades to display yet.');
-
-  const now = today();
-  const windowStart = getMonday(new Date(now.getFullYear(), now.getMonth() - 1, now.getDate()));
-  const windowEnd   = new Date(now.getFullYear(), now.getMonth() + 2, now.getDate());
+  const relevant = trades.filter(t =>
+    t.outcome === 'Assigned' || t.strategy === 'Covered Call' ||
+    (t.outcome && t.outcome !== 'Open' && t.dateOpened)
+  );
+  const tickers = [...new Set(relevant.map(t => t.ticker))].filter(Boolean).slice(0, 10);
+  if (!tickers.length) return h('div', { style: { fontSize: 11, color: 'var(--text2)' } }, 'No closed trades to display yet.');
 
   const allDates = relevant.flatMap(t => [fd(t.dateOpened), fd(t.dateClosed || t.expiry)]).filter(Boolean);
-  const minD = new Date(Math.min(windowStart.getTime(), ...allDates.map(d => d.getTime())));
-  const maxD = new Date(Math.max(windowEnd.getTime(), ...allDates.map(d => d.getTime())));
+  if (!allDates.length) return null;
 
+  const minD = new Date(Math.min(...allDates.map(d => d.getTime())));
+  const maxD = new Date(Math.max(...allDates.map(d => d.getTime()), today().getTime()));
   const totalMs = maxD - minD || 1;
   const pct = d => d ? Math.max(0, Math.min(100, (d - minD) / totalMs * 100)) : 0;
 
-  const weeks = [];
-  let cursor = getMonday(minD);
-  while (cursor <= maxD) {
-    weeks.push(new Date(cursor));
-    cursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + 7);
-  }
-
-  const months = [];
-  let mCursor = new Date(minD.getFullYear(), minD.getMonth(), 1);
-  while (mCursor <= maxD) {
-    months.push(new Date(mCursor));
-    mCursor = new Date(mCursor.getFullYear(), mCursor.getMonth() + 1, 1);
-  }
-
-  const todayPct = pct(now);
-
   return h('div', { className: 'gantt-container' },
-
-    h('div', { className: 'gantt-month-row' },
-      h('div', { className: 'gantt-label' }, ''),
-      h('div', { className: 'gantt-month-track' },
-        months.map((m, i) => {
-          const left = pct(m);
-          const nextM = months[i + 1] || maxD;
-          const width = pct(nextM) - left;
-          return h('div', {
-            key: i,
-            className: 'gantt-month-label',
-            style: { left: left + '%', width: Math.max(width, 4) + '%' }
-          }, m.toLocaleDateString('en-US', { month: 'short', year: '2-digit' }));
-        })
-      )
-    ),
-
     tickers.map(ticker => {
       const legs = trades
         .filter(t => t.ticker === ticker && t.dateOpened)
@@ -83,79 +23,90 @@ function GanttChart({ trades }) {
       return h('div', { key: ticker, className: 'gantt-row' },
         h('div', { className: 'gantt-label', title: ticker }, ticker),
         h('div', { className: 'gantt-track' },
-
-          weeks.map((w, i) => h('div', {
-            key: 'w' + i,
-            className: 'gantt-week-line',
-            style: { left: pct(w) + '%' }
-          })),
-
-          h('div', { className: 'gantt-today-line', style: { left: todayPct + '%' } }),
-
           legs.map((l, i) => {
             const start = fd(l.dateOpened);
-            const end   = fd(l.dateClosed || l.expiry) || now;
+            const end   = fd(l.dateClosed || l.expiry) || today();
             if (!start) return null;
             const left  = pct(start);
-            const width = Math.max(0.6, pct(end) - left);
-            const col   = legColor(l);
-            const label = legLabel(l);
+            const width = Math.max(0.5, pct(end) - left);
+            const isPut = l.outcome === 'Assigned';
+            const isCC  = l.strategy === 'Covered Call';
+            const isOpen = l.outcome === 'Open';
+            const col = isPut ? '#185fa5' : isOpen ? '#ef9f27' : '#1d9e75';
             const m = calcMetrics(l);
-            const tip = l.ticker + ' ' + (l.strategy || '') + ' · opened ' + l.dateOpened
-              + ' · strike ' + (l.strike1 || '—')
-              + (m.pnl != null ? ' → ' + f$(m.pnl) : ' (open, exp ' + (l.expiry || '—') + ')');
+            const tip = l.ticker + ' ' + (l.strategy || '') + ' ' + l.dateOpened
+              + (m.pnl != null ? ' → ' + f$(m.pnl) : ' (open)');
 
             return h('div', {
               key: i, className: 'gantt-seg',
               title: tip,
               style: {
                 left: left + '%', width: width + '%',
-                background: col + '30', borderLeft: '2px solid ' + col
+                background: col + '28', borderLeft: '2px solid ' + col
               }
             },
-              width > 5 && h('span', { style: { color: col } }, label)
+              width > 6 && h('span', { style: { color: col } }, isPut ? 'Put' : isCC ? 'CC' : '')
             );
           })
         )
       );
     }),
 
-    h('div', { className: 'gantt-row' },
-      h('div', { className: 'gantt-label' }, ''),
-      h('div', { className: 'gantt-week-axis' },
-        weeks.filter((_, i) => i % 2 === 0).map((w, i) => h('span', {
-          key: i,
-          style: { left: pct(w) + '%' }
-        }, w.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })))
-      )
+    h('div', { className: 'gantt-axis' },
+      h('span', null, minD.toISOString().slice(0, 7)),
+      h('span', null, maxD.toISOString().slice(0, 7))
     ),
-
     h('div', { className: 'gantt-legend' },
       h('span', null, h('span', { className: 'dot', style: { background: '#185fa5' } }), ' Put / assigned'),
       h('span', null, h('span', { className: 'dot', style: { background: '#1d9e75' } }), ' Covered call'),
-      h('span', null, h('span', { className: 'dot', style: { background: '#7ab648' } }), ' Closed — won'),
-      h('span', null, h('span', { className: 'dot', style: { background: '#d65c5c' } }), ' Closed — lost'),
-      h('span', null, h('span', { className: 'dot', style: { background: '#ef9f27' } }), ' Open'),
-      h('span', null, h('span', { style: { display: 'inline-block', width: 2, height: 10, background: '#185fa5' } }), ' Today')
+      h('span', null, h('span', { className: 'dot', style: { background: '#ef9f27' } }), ' Open')
     )
   );
 }
-
 
 function CCForm({ ticker, onSave, onCancel }) {
   const [t, setT] = useStateWC({
     dateOpened: todayStr(), ticker, strategy: 'Covered Call', putCall: 'C',
     strike1: '', expiry: '', dte: '30', contracts: '1',
-    underlyingAtEntry: '', premiumReceived: '', outcome: 'Open', dateClosed: '', notes: ''
+    underlyingAtEntry: '', ivhv: '', iv: '', delta: '', premiumReceived: '',
+    outcome: 'Open', dateClosed: '', notes: ''
   });
   const up = (k, v) => setT(p => ({ ...p, [k]: v }));
+
+  // Auto-calculate DTE from dates, unless the user types directly into the field
+  const [dteOverridden, setDteOverridden] = useStateWC(false);
+  useEffectC(() => {
+    if (dteOverridden) return;
+    const d1 = fd(t.dateOpened);
+    const d2 = fd(t.expiry);
+    if (d1 && d2) {
+      const calculated = daysBetween(d1, d2);
+      if (calculated > 0 && String(calculated) !== t.dte) {
+        setT(p => ({ ...p, dte: String(calculated) }));
+      }
+    }
+  }, [t.dateOpened, t.expiry]);
+
+  const m = useMemoWC(() => calcMetrics(t), [t]);
 
   return h('div', null,
     h('div', { className: 'form-grid' },
       h('div', { className: 'field' }, h('label', null, 'Date'), h('input', { type: 'date', value: t.dateOpened, onChange: e => up('dateOpened', e.target.value) })),
       h('div', { className: 'field' }, h('label', null, 'Strike (call)'), h('input', { type: 'number', step: '0.5', value: t.strike1, onChange: e => up('strike1', e.target.value) })),
       h('div', { className: 'field' }, h('label', null, 'Expiry'), h('input', { type: 'date', value: t.expiry, onChange: e => up('expiry', e.target.value) })),
-      h('div', { className: 'field' }, h('label', null, 'DTE'), h('input', { type: 'number', value: t.dte, onChange: e => up('dte', e.target.value) })),
+      h('div', { className: 'field' },
+        h('label', null, 'DTE ' + (dteOverridden ? '(manual)' : '(auto)')),
+        h('input', {
+          type: 'number', value: t.dte || '',
+          onChange: e => { setDteOverridden(true); up('dte', e.target.value); },
+          style: dteOverridden ? { borderColor: 'var(--blue)' } : {}
+        })
+      ),
+      h('div', { className: 'field' }, h('label', null, 'Contracts'), h('input', { type: 'number', value: t.contracts, onChange: e => up('contracts', e.target.value) })),
+      h('div', { className: 'field' }, h('label', null, 'Underlying at entry'), h('input', { type: 'number', step: '0.01', value: t.underlyingAtEntry, onChange: e => up('underlyingAtEntry', e.target.value) })),
+      h('div', { className: 'field' }, h('label', null, 'IV/HV ratio'), h('input', { type: 'number', step: '0.01', placeholder: '1.5', value: t.ivhv, onChange: e => up('ivhv', e.target.value) })),
+      h('div', { className: 'field' }, h('label', null, 'IV % at entry'), h('input', { type: 'number', step: '0.01', placeholder: '0.35', value: t.iv, onChange: e => up('iv', e.target.value) })),
+      h('div', { className: 'field' }, h('label', null, 'Delta'), h('input', { type: 'number', step: '0.01', placeholder: '0.20', value: t.delta, onChange: e => up('delta', e.target.value) })),
       h('div', { className: 'field' }, h('label', null, 'Premium ($)'), h('input', { type: 'number', step: '0.01', value: t.premiumReceived, onChange: e => up('premiumReceived', e.target.value) })),
       h('div', { className: 'field' },
         h('label', null, 'Outcome'),
@@ -165,6 +116,22 @@ function CCForm({ ticker, onSave, onCancel }) {
       ),
       t.outcome !== 'Open' && h('div', { className: 'field' }, h('label', null, 'Date closed'), h('input', { type: 'date', value: t.dateClosed || '', onChange: e => up('dateClosed', e.target.value) }))
     ),
+
+    (t.strike1 || t.premiumReceived) && h('div', { className: 'calc-preview' },
+      h('div', { className: 'calc-item' }, h('div', { className: 'calc-label' }, 'Capital at risk'), h('div', { className: 'calc-val' }, f$(m.cap))),
+      h('div', { className: 'calc-item' }, h('div', { className: 'calc-label' }, 'Break-even (call)'), h('div', { className: 'calc-val' }, f$(m.be, 2))),
+      h('div', { className: 'calc-item' }, h('div', { className: 'calc-label' }, 'BE cushion'),
+        h('div', { className: 'calc-val', style: { color: m.bec > 0.1 ? '#3b6d11' : m.bec > 0.05 ? '#854f0b' : '#a32d2d' } }, m.bec > 0 ? fp(m.bec) : '—')),
+      h('div', { className: 'calc-item' }, h('div', { className: 'calc-label' }, 'Ann. ROCAR'),
+        h('div', { className: 'calc-val', style: { color: '#185fa5' } },
+          (!t.premiumReceived || parseFloat(t.premiumReceived) === 0) ? '— add premium' : fp(m.annR)))
+    ),
+
+    h('div', { className: 'field full', style: { marginTop: 4, marginBottom: 10 } },
+      h('label', null, 'Notes'),
+      h('textarea', { rows: 2, value: t.notes || '', onChange: e => up('notes', e.target.value) })
+    ),
+
     h('div', { className: 'btn-group' },
       h('button', { className: 'btn btn-primary btn-sm', onClick: () => onSave({ ...t, id: String(Date.now()) }) }, 'Save covered call'),
       h('button', { className: 'btn btn-sm', onClick: onCancel }, 'Cancel')
