@@ -31,18 +31,32 @@ function calcMetrics(t) {
   const isSpread = t.strategy && (t.strategy.includes('Spread') || t.strategy.includes('Condor'));
 
   let cap = 0, maxLoss = 0, be = 0;
+  const isCoveredCall = t.strategy === 'Covered Call';
+  const isNakedCall = t.putCall === 'C' && !isCoveredCall && !isSpread;
+
   if (isSpread && s1 && s2) {
     const w = Math.abs(s1 - s2);
     maxLoss = (w - prem) * 100 * con;
     cap = maxLoss;
     be = t.putCall === 'P' ? s1 - prem : s1 + prem;
   } else if (t.putCall === 'P') {
+    // Naked / cash-secured put — full strike is the real collateral requirement
     cap = s1 * 100 * con;
     maxLoss = cap - prem * 100 * con;
     be = s1 - prem;
+  } else if (isCoveredCall) {
+    // Covered call — shares already owned are the collateral, already
+    // counted separately as "shares deployed" in Capital at Risk.
+    // No additional capital is required to write this call.
+    cap = 0;
+    maxLoss = 0; // capped loss is on the underlying shares, not the call itself
+    be = s1 + prem;
   } else {
-    cap = s1 * 100 * con;
-    maxLoss = cap;
+    // True naked call (no shares owned) — risk is technically unbounded,
+    // strike × 100 is not a meaningful collateral figure. Flagged via
+    // isNakedCall rather than silently treated like a cash-secured put.
+    cap = s1 * 100 * con; // shown for reference only, excluded from collateral sums
+    maxLoss = null; // undefined / unbounded
     be = s1 + prem;
   }
 
@@ -65,7 +79,7 @@ function calcMetrics(t) {
   const held = d1 && d2 ? daysBetween(d1, d2) : dte;
   const actAnn = pnl != null && held > 0 && cap > 0 ? (pnl / cap) * (365 / held) : null;
 
-  return { cap, maxLoss, be, roc, annR, bec, pnl, actAnn, isSpread };
+  return { cap, maxLoss, be, roc, annR, bec, pnl, actAnn, isSpread, isCoveredCall, isNakedCall };
 }
 
 // ── Price fetch via Finnhub (fast, no proxy needed) ───────────
