@@ -2,9 +2,19 @@ function CapitalRisk({ trades, prices }) {
   const open     = trades.filter(t => t.outcome === 'Open');
   const assigned = trades.filter(t => t.outcome === 'Assigned');
 
-  let nakedCap = 0, spreadMax = 0, dw = 0;
+  let nakedCap = 0, spreadMax = 0, dw = 0, ccCount = 0, nakedCallCount = 0;
   open.forEach(t => {
     const m = calcMetrics(t);
+    if (m.isCoveredCall) {
+      // Zero additional collateral — shares already counted as "shares deployed"
+      ccCount++;
+      return;
+    }
+    if (m.isNakedCall) {
+      // Risk is technically unbounded — don't pretend strike×100 is the real number
+      nakedCallCount++;
+      return;
+    }
     if (m.isSpread) spreadMax += m.cap; else nakedCap += m.cap;
     dw += m.cap * (parseFloat(t.delta) || 0.2);
   });
@@ -25,10 +35,16 @@ function CapitalRisk({ trades, prices }) {
 
   return h('div', null,
     h('div', { className: 'metrics-grid' },
-      h('div', { className: 'mc' }, h('div', { className: 'mc-label' }, 'Naked collateral'), h('div', { className: 'mc-val' }, f$(nakedCap))),
+      h('div', { className: 'mc' }, h('div', { className: 'mc-label' }, 'Naked put collateral'), h('div', { className: 'mc-val' }, f$(nakedCap))),
       h('div', { className: 'mc' }, h('div', { className: 'mc-label' }, 'Spread max loss'), h('div', { className: 'mc-val' }, f$(spreadMax))),
       h('div', { className: 'mc' }, h('div', { className: 'mc-label' }, 'Shares deployed'), h('div', { className: 'mc-val' }, f$(assVal))),
       h('div', { className: 'mc' }, h('div', { className: 'mc-label' }, 'Delta-weighted'), h('div', { className: 'mc-val' }, f$(dw)))
+    ),
+
+    (ccCount > 0 || nakedCallCount > 0) && h('div', { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 10 } },
+      ccCount > 0 && (ccCount + ' covered call' + (ccCount !== 1 ? 's' : '') + ' open — $0 additional collateral, already covered by shares deployed.'),
+      ccCount > 0 && nakedCallCount > 0 && ' ',
+      nakedCallCount > 0 && (nakedCallCount + ' naked call' + (nakedCallCount !== 1 ? 's' : '') + ' open — risk is unbounded, excluded from the dollar totals below.')
     ),
 
     h('div', { className: 'card' },
@@ -54,14 +70,16 @@ function CapitalRisk({ trades, prices }) {
           )),
           h('tbody', null, open.map(t => {
             const m = calcMetrics(t);
+            const atRiskDisplay = m.isCoveredCall ? f$(0) : m.isNakedCall ? 'Unbounded' : f$(m.cap);
+            const dWtdDisplay = m.isCoveredCall ? f$(0) : m.isNakedCall ? '—' : f$(m.cap * (parseFloat(t.delta) || 0.2));
             return h('tr', { key: t.id },
               h('td', null, h('strong', null, t.ticker)),
               h('td', null, h('span', { className: 'badge badge-gray', style: { fontSize: 10 } }, t.strategy)),
               h('td', null, t.strike1 + (t.strike2 ? ' / ' + t.strike2 : '')),
-              h('td', null, f$(m.cap)),
+              h('td', null, atRiskDisplay),
               h('td', null, t.delta || '0.20'),
-              h('td', null, f$(m.cap * (parseFloat(t.delta) || 0.2))),
-              h('td', null, h('span', { className: 'rocp' }, fp(m.annR))),
+              h('td', null, dWtdDisplay),
+              h('td', null, h('span', { className: 'rocp' }, m.isCoveredCall ? '—' : fp(m.annR))),
               h('td', null, h('span', { className: 'badge ' + (m.bec > 0.1 ? 'badge-green' : m.bec > 0.05 ? 'badge-amber' : 'badge-red') }, fp(m.bec)))
             );
           }))
