@@ -1,20 +1,80 @@
+function legColor(t) {
+  if (t.outcome === 'Assigned') return '#185fa5';
+  if (t.strategy === 'Covered Call') return '#1d9e75';
+  if (t.outcome === 'Open') return '#ef9f27';
+  if (t.outcome === 'Expired Worthless' || t.outcome === 'Bought Back' || t.outcome === 'Closed Profit') return '#7ab648';
+  if (t.outcome === 'Closed Loss' || t.outcome === 'Max Loss') return '#d65c5c';
+  return '#9196b0';
+}
+function legLabel(t) {
+  if (t.outcome === 'Assigned') return 'Put';
+  if (t.strategy === 'Covered Call') return 'CC';
+  if (t.strategy && t.strategy.includes('Spread')) return 'Spr';
+  if (t.putCall === 'P') return 'Put';
+  if (t.putCall === 'C') return 'Call';
+  return '';
+}
+
+function getMonday(d) {
+  const date = new Date(d);
+  const day = date.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  date.setDate(date.getDate() + diff);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
 function GanttChart({ trades }) {
-  const relevant = trades.filter(t =>
-    t.outcome === 'Assigned' || t.strategy === 'Covered Call' ||
-    (t.outcome && t.outcome !== 'Open' && t.dateOpened)
-  );
-  const tickers = [...new Set(relevant.map(t => t.ticker))].filter(Boolean).slice(0, 10);
-  if (!tickers.length) return h('div', { style: { fontSize: 11, color: 'var(--text2)' } }, 'No closed trades to display yet.');
+  const relevant = trades.filter(t => t.dateOpened && t.ticker);
+  const tickers = [...new Set(relevant.map(t => t.ticker))].filter(Boolean);
+
+  if (!tickers.length) return h('div', { style: { fontSize: 11, color: 'var(--text2)' } }, 'No trades to display yet.');
+
+  const now = today();
+  const windowStart = getMonday(new Date(now.getFullYear(), now.getMonth() - 1, now.getDate()));
+  const windowEnd   = new Date(now.getFullYear(), now.getMonth() + 2, now.getDate());
 
   const allDates = relevant.flatMap(t => [fd(t.dateOpened), fd(t.dateClosed || t.expiry)]).filter(Boolean);
-  if (!allDates.length) return null;
+  const minD = new Date(Math.min(windowStart.getTime(), ...allDates.map(d => d.getTime())));
+  const maxD = new Date(Math.max(windowEnd.getTime(), ...allDates.map(d => d.getTime())));
 
-  const minD = new Date(Math.min(...allDates.map(d => d.getTime())));
-  const maxD = new Date(Math.max(...allDates.map(d => d.getTime()), today().getTime()));
   const totalMs = maxD - minD || 1;
   const pct = d => d ? Math.max(0, Math.min(100, (d - minD) / totalMs * 100)) : 0;
 
+  const weeks = [];
+  let cursor = getMonday(minD);
+  while (cursor <= maxD) {
+    weeks.push(new Date(cursor));
+    cursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + 7);
+  }
+
+  const months = [];
+  let mCursor = new Date(minD.getFullYear(), minD.getMonth(), 1);
+  while (mCursor <= maxD) {
+    months.push(new Date(mCursor));
+    mCursor = new Date(mCursor.getFullYear(), mCursor.getMonth() + 1, 1);
+  }
+
+  const todayPct = pct(now);
+
   return h('div', { className: 'gantt-container' },
+
+    h('div', { className: 'gantt-month-row' },
+      h('div', { className: 'gantt-label' }, ''),
+      h('div', { className: 'gantt-month-track' },
+        months.map((m, i) => {
+          const left = pct(m);
+          const nextM = months[i + 1] || maxD;
+          const width = pct(nextM) - left;
+          return h('div', {
+            key: i,
+            className: 'gantt-month-label',
+            style: { left: left + '%', width: Math.max(width, 4) + '%' }
+          }, m.toLocaleDateString('en-US', { month: 'short', year: '2-digit' }));
+        })
+      )
+    ),
+
     tickers.map(ticker => {
       const legs = trades
         .filter(t => t.ticker === ticker && t.dateOpened)
@@ -23,46 +83,64 @@ function GanttChart({ trades }) {
       return h('div', { key: ticker, className: 'gantt-row' },
         h('div', { className: 'gantt-label', title: ticker }, ticker),
         h('div', { className: 'gantt-track' },
+
+          weeks.map((w, i) => h('div', {
+            key: 'w' + i,
+            className: 'gantt-week-line',
+            style: { left: pct(w) + '%' }
+          })),
+
+          h('div', { className: 'gantt-today-line', style: { left: todayPct + '%' } }),
+
           legs.map((l, i) => {
             const start = fd(l.dateOpened);
-            const end   = fd(l.dateClosed || l.expiry) || today();
+            const end   = fd(l.dateClosed || l.expiry) || now;
             if (!start) return null;
             const left  = pct(start);
-            const width = Math.max(0.5, pct(end) - left);
-            const isPut = l.outcome === 'Assigned';
-            const isCC  = l.strategy === 'Covered Call';
-            const isOpen = l.outcome === 'Open';
-            const col = isPut ? '#185fa5' : isOpen ? '#ef9f27' : '#1d9e75';
+            const width = Math.max(0.6, pct(end) - left);
+            const col   = legColor(l);
+            const label = legLabel(l);
             const m = calcMetrics(l);
-            const tip = l.ticker + ' ' + (l.strategy || '') + ' ' + l.dateOpened
-              + (m.pnl != null ? ' → ' + f$(m.pnl) : ' (open)');
+            const tip = l.ticker + ' ' + (l.strategy || '') + ' · opened ' + l.dateOpened
+              + ' · strike ' + (l.strike1 || '—')
+              + (m.pnl != null ? ' → ' + f$(m.pnl) : ' (open, exp ' + (l.expiry || '—') + ')');
 
             return h('div', {
               key: i, className: 'gantt-seg',
               title: tip,
               style: {
                 left: left + '%', width: width + '%',
-                background: col + '28', borderLeft: '2px solid ' + col
+                background: col + '30', borderLeft: '2px solid ' + col
               }
             },
-              width > 6 && h('span', { style: { color: col } }, isPut ? 'Put' : isCC ? 'CC' : '')
+              width > 5 && h('span', { style: { color: col } }, label)
             );
           })
         )
       );
     }),
 
-    h('div', { className: 'gantt-axis' },
-      h('span', null, minD.toISOString().slice(0, 7)),
-      h('span', null, maxD.toISOString().slice(0, 7))
+    h('div', { className: 'gantt-row' },
+      h('div', { className: 'gantt-label' }, ''),
+      h('div', { className: 'gantt-week-axis' },
+        weeks.filter((_, i) => i % 2 === 0).map((w, i) => h('span', {
+          key: i,
+          style: { left: pct(w) + '%' }
+        }, w.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })))
+      )
     ),
+
     h('div', { className: 'gantt-legend' },
       h('span', null, h('span', { className: 'dot', style: { background: '#185fa5' } }), ' Put / assigned'),
       h('span', null, h('span', { className: 'dot', style: { background: '#1d9e75' } }), ' Covered call'),
-      h('span', null, h('span', { className: 'dot', style: { background: '#ef9f27' } }), ' Open')
+      h('span', null, h('span', { className: 'dot', style: { background: '#7ab648' } }), ' Closed — won'),
+      h('span', null, h('span', { className: 'dot', style: { background: '#d65c5c' } }), ' Closed — lost'),
+      h('span', null, h('span', { className: 'dot', style: { background: '#ef9f27' } }), ' Open'),
+      h('span', null, h('span', { style: { display: 'inline-block', width: 2, height: 10, background: '#185fa5' } }), ' Today')
     )
   );
 }
+
 
 function CCForm({ ticker, onSave, onCancel }) {
   const [t, setT] = useStateWC({
