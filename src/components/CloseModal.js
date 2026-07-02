@@ -49,11 +49,13 @@ function CloseModal({ trade, onClose, onSave }) {
 function ResolveBanner({ trades, prices, onResolve }) {
   const expired = trades.filter(t => {
     if (t.outcome !== 'Open') return false;
-    const exp = fd(t.expiry);
-    // Only flag once expiry has fully passed — wait until the day after
-    // so we use a settled closing price, not an intraday quote while
-    // the market is still open on expiry day itself.
-    return exp && exp < today();
+    if (!t.expiry) return false;
+    // Only flag when today's DATE is strictly after the expiry DATE.
+    // String comparison on YYYY-MM-DD avoids the midnight-vs-now datetime
+    // bug: on expiry day itself ('2026-07-02' < '2026-07-02' is false),
+    // the banner stays hidden; it appears the following day, once the
+    // settled closing price is available.
+    return t.expiry < todayStr();
   });
 
   if (!expired.length) return null;
