@@ -60,12 +60,67 @@ function App() {
   const openCount  = trades.filter(t => t.outcome === 'Open').length;
   const cycleCount = trades.filter(t => t.outcome === 'Assigned').length;
 
+  // ── Export / Import ──────────────────────────────────────────
+  const downloadBlob = (content, filename, type) => {
+    const blob = new Blob([content], { type });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportJson = () => {
+    const data = { exportedAt: new Date().toISOString(), tradeCount: trades.length, trades, watchlist };
+    downloadBlob(JSON.stringify(data, null, 2), 'options-tracker-' + todayStr() + '.json', 'application/json');
+  };
+
+  const exportCsv = () => {
+    const cols = ['dateOpened','ticker','strategy','putCall','strike1','strike2','expiry','dte','contracts','underlyingAtEntry','ivhv','iv','delta','premiumReceived','outcome','closePrice','dateClosed','notes'];
+    const esc = v => {
+      let s = v == null ? '' : String(v);
+      if (s.includes(',') || s.includes('"') || s.includes('\n')) s = '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    };
+    const rows = trades.map(t => cols.map(c => esc(t[c])).join(','));
+    downloadBlob(cols.join(',') + '\n' + rows.join('\n'), 'options-tracker-' + todayStr() + '.csv', 'text/csv');
+  };
+
+  const importJson = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        const imported = Array.isArray(data) ? data : data.trades;
+        if (!Array.isArray(imported)) throw new Error('No trades array found');
+        if (!window.confirm('Import ' + imported.length + ' trades? This REPLACES your current ' + trades.length + ' trades. Export a backup first if unsure.')) return;
+        setTrades(imported);
+        if (data.watchlist && Array.isArray(data.watchlist)) setWatchlist(data.watchlist);
+      } catch (err) {
+        window.alert('Could not read that file: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = ''; // allow re-importing the same file later
+  };
+
   return h('div', null,
     h('div', { className: 'app-header' },
       h('div', null,
         h('div', { className: 'app-title' }, 'Options tracker'),
         h('div', { className: 'app-sub' },
           openCount + ' open · ' + cycleCount + ' wheel cycle' + (cycleCount !== 1 ? 's' : '') + ' · ' + trades.length + ' total trades'
+        )
+      ),
+      h('div', { style: { display: 'flex', gap: 6, alignItems: 'center' } },
+        h('button', { className: 'btn btn-sm', onClick: exportJson, title: 'Full backup — use this one for analysis' }, 'Export JSON'),
+        h('button', { className: 'btn btn-sm', onClick: exportCsv, title: 'Spreadsheet-friendly export' }, 'CSV'),
+        h('label', { className: 'btn btn-sm', style: { cursor: 'pointer' }, title: 'Restore from a JSON export' },
+          'Import',
+          h('input', { type: 'file', accept: '.json,application/json', onChange: importJson, style: { display: 'none' } })
         )
       )
     ),
