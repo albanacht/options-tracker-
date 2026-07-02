@@ -80,42 +80,74 @@ function GanttChart({ trades }) {
         .filter(t => t.ticker === ticker && t.dateOpened)
         .sort((a, b) => a.dateOpened.localeCompare(b.dateOpened));
 
-      return h('div', { key: ticker, className: 'gantt-row' },
-        h('div', { className: 'gantt-label', title: ticker }, ticker),
-        h('div', { className: 'gantt-track' },
+      // ── Lane packing ──────────────────────────────────────
+      // Two overlapping positions of the SAME type (put+put or
+      // call+call) go on separate lanes so they don't stack on
+      // top of each other (e.g. two CRM lots assigned at
+      // different strikes). A put and a call overlapping (a
+      // volatility-harvest pair) share one lane and stay compact.
+      const laneOf = l => {
+        const s = fd(l.dateOpened);
+        const e = fd(l.dateClosed || l.expiry) || now;
+        return { s, e };
+      };
+      const lanes = [];
+      legs.forEach(l => {
+        const { s, e } = laneOf(l);
+        if (!s) return;
+        let placed = false;
+        for (const lane of lanes) {
+          const conflict = lane.some(x => {
+            const xr = laneOf(x);
+            const overlaps = s <= xr.e && xr.s <= e;
+            const sameKind = (x.putCall || '') === (l.putCall || '');
+            return overlaps && sameKind;
+          });
+          if (!conflict) { lane.push(l); placed = true; break; }
+        }
+        if (!placed) lanes.push([l]);
+      });
 
-          weeks.map((w, i) => h('div', {
-            key: 'w' + i,
-            className: 'gantt-week-line',
-            style: { left: pct(w) + '%' }
-          })),
+      return h('div', { key: ticker },
+        lanes.map((lane, li) =>
+          h('div', { key: li, className: 'gantt-row' },
+            h('div', { className: 'gantt-label', title: ticker }, li === 0 ? ticker : ''),
+            h('div', { className: 'gantt-track' },
 
-          h('div', { className: 'gantt-today-line', style: { left: todayPct + '%' } }),
+              weeks.map((w, i) => h('div', {
+                key: 'w' + i,
+                className: 'gantt-week-line',
+                style: { left: pct(w) + '%' }
+              })),
 
-          legs.map((l, i) => {
-            const start = fd(l.dateOpened);
-            const end   = fd(l.dateClosed || l.expiry) || now;
-            if (!start) return null;
-            const left  = pct(start);
-            const width = Math.max(0.6, pct(end) - left);
-            const col   = legColor(l);
-            const label = legLabel(l);
-            const m = calcMetrics(l);
-            const tip = l.ticker + ' ' + (l.strategy || '') + ' · opened ' + l.dateOpened
-              + ' · strike ' + (l.strike1 || '—')
-              + (m.pnl != null ? ' → ' + f$(m.pnl) : ' (open, exp ' + (l.expiry || '—') + ')');
+              h('div', { className: 'gantt-today-line', style: { left: todayPct + '%' } }),
 
-            return h('div', {
-              key: i, className: 'gantt-seg',
-              title: tip,
-              style: {
-                left: left + '%', width: width + '%',
-                background: col + '30', borderLeft: '2px solid ' + col
-              }
-            },
-              width > 5 && h('span', { style: { color: col } }, label)
-            );
-          })
+              lane.map((l, i) => {
+                const start = fd(l.dateOpened);
+                const end   = fd(l.dateClosed || l.expiry) || now;
+                if (!start) return null;
+                const left  = pct(start);
+                const width = Math.max(0.6, pct(end) - left);
+                const col   = legColor(l);
+                const label = legLabel(l);
+                const m = calcMetrics(l);
+                const tip = l.ticker + ' ' + (l.strategy || '') + ' · opened ' + l.dateOpened
+                  + ' · strike ' + (l.strike1 || '—')
+                  + (m.pnl != null ? ' → ' + f$(m.pnl) : ' (open, exp ' + (l.expiry || '—') + ')');
+
+                return h('div', {
+                  key: i, className: 'gantt-seg',
+                  title: tip,
+                  style: {
+                    left: left + '%', width: width + '%',
+                    background: col + '30', borderLeft: '2px solid ' + col
+                  }
+                },
+                  width > 5 && h('span', { style: { color: col } }, label + (l.strike1 ? ' ' + l.strike1 : ''))
+                );
+              })
+            )
+          )
         )
       );
     }),
