@@ -6,6 +6,7 @@ const TABS = [
   { id: 'charts',    label: 'Charts',         icon: 'ti-chart-bar' },
   { id: 'watchlist', label: 'Watchlist',      icon: 'ti-list' },
   { id: 'ev',        label: 'EV / Edge',      icon: 'ti-math-function' },
+  { id: 'scanner',   label: 'Scanner',        icon: 'ti-radar' },
 ];
 
 function App() {
@@ -188,7 +189,8 @@ function App() {
     tab === 'risk'      && h(CapitalRisk,    { trades, prices }),
     tab === 'charts'    && h(Charts,         { trades, prices }),
     tab === 'watchlist' && h(Watchlist,      { watchlist, setWatchlist, prices, loadingPrices: loading, refresh: doFetchPrices }),
-    tab === 'ev'        && h(EVCalculator,   { trades })
+    tab === 'ev'        && h(EVCalculator,   { trades }),
+    tab === 'scanner'   && h(Scanner, { onPick: draft => { setEditTrade(draft); setShowForm(false); setTab('logger'); } })
   );
 }
 
