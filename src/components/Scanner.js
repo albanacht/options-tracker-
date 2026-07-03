@@ -1,8 +1,9 @@
 // ── Scanner: on-demand candidate finder ─────────────────────────
-// Stage 1 (Finnhub): quotes + earnings dates for the universe, throttled
-// to respect the 60 calls/min free tier.
-// Stage 2 (Yahoo chains via CORS proxy): option chains for survivors,
-// Black-Scholes deltas, ROCAR / BE cushion, strategy classification.
+// Stage 1 (Finnhub): earnings dates for the universe, throttled to the
+// 60 calls/min free tier.
+// Stage 2 (marketdata.app): one option-chain call per ticker — returns
+// spot, real deltas, IV, bid/ask, OI directly. Free tier: 100 calls/day,
+// so ~3 full scans per day.
 
 const SCANNER_DEFAULT_UNIVERSE = [
   'VZ','T','KO','PEP','PG','JNJ','BMY','MRK','PFE','ABBV','MO','BTI',
@@ -10,28 +11,9 @@ const SCANNER_DEFAULT_UNIVERSE = [
   'CSCO','QCOM','INTC','GOOG','AMZN','AAPL','MSFT','CRM','TGT'
 ];
 
-const SCAN_RISK_FREE = 0.04;
+const MARKETDATA_KEY = 'Wk9KWF9SdExJRlc4VWhwMnhtcllydjZFLS1xeGtNclBsSDRMQTR0VXJUaz0';
 
-// Normal CDF (Abramowitz & Stegun approximation)
-function normCdf(x) {
-  const t = 1 / (1 + 0.2316419 * Math.abs(x));
-  const d = 0.3989423 * Math.exp(-x * x / 2);
-  let p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
-  return x > 0 ? 1 - p : p;
-}
-
-function bsPutDelta(S, K, T, sigma, r) {
-  if (!S || !K || !T || !sigma || T <= 0 || sigma <= 0) return null;
-  const d1 = (Math.log(S / K) + (r + sigma * sigma / 2) * T) / (sigma * Math.sqrt(T));
-  return normCdf(d1) - 1;
-}
-function bsCallDelta(S, K, T, sigma, r) {
-  if (!S || !K || !T || !sigma || T <= 0 || sigma <= 0) return null;
-  const d1 = (Math.log(S / K) + (r + sigma * sigma / 2) * T) / (sigma * Math.sqrt(T));
-  return normCdf(d1);
-}
-
-// Throttled batch runner: Finnhub free tier allows 60 calls/min.
+// Throttled batch runner for Finnhub (60 calls/min free tier)
 async function batchRun(tasks, batchSize, gapMs, onProgress) {
   const results = [];
   for (let i = 0; i < tasks.length; i += batchSize) {
@@ -50,25 +32,19 @@ async function finnhubGet(path) {
   return r.json();
 }
 
-async function yahooGet(url) {
-  // corsproxy.io primary, allorigins fallback
-  try {
-    const r = await fetch('https://corsproxy.io/?' + encodeURIComponent(url), { signal: AbortSignal.timeout(9000) });
-    if (r.ok) return r.json();
-    throw new Error('corsproxy ' + r.status);
-  } catch (_) {
-    const r2 = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(url), { signal: AbortSignal.timeout(12000) });
-    if (!r2.ok) throw new Error('allorigins ' + r2.status);
-    return r2.json();
-  }
+// marketdata.app returns 200 for live data and 203 for cached — both valid
+async function mdGet(path) {
+  const r = await fetch('https://api.marketdata.app/v1' + path + (path.includes('?') ? '&' : '?') + 'token=' + MARKETDATA_KEY, { signal: AbortSignal.timeout(10000) });
+  if (r.status === 429) throw new Error('quota');
+  if (!r.ok && r.status !== 203) throw new Error('marketdata ' + r.status);
+  return r.json();
 }
 
-function goodContract(c, spotMid) {
-  if (!c || !c.bid || c.bid <= 0.05) return false;
-  const spread = (c.ask || 0) - c.bid;
-  const mid = ((c.ask || 0) + c.bid) / 2;
-  if (spread > Math.max(0.15, mid * 0.12)) return false;
-  if ((c.openInterest || 0) < 100) return false;
+function contractOk(row) {
+  if (!row.bid || row.bid <= 0.05) return false;
+  const mid = ((row.ask || 0) + row.bid) / 2;
+  if ((row.ask || 0) - row.bid > Math.max(0.15, mid * 0.12)) return false;
+  if ((row.oi || 0) < 100) return false;
   return true;
 }
 
@@ -99,134 +75,125 @@ function Scanner({ onPick }) {
     setScanning(true);
     setError('');
     setResults(null);
-    const nowMs = Date.now();
     const candidates = [];
+    let chainsTried = 0, chainsOk = 0, quotaHit = false;
 
     try {
-      // ── Stage 1: quotes (throttled) ─────────────────────────
-      setPhase('Stage 1/3 — fetching quotes');
+      // ── Stage 1: earnings dates (Finnhub, throttled) ─────────
+      setPhase('Stage 1/2 — checking earnings dates');
       setProgress(0);
-      const quoteTasks = universe.map(tk => () => finnhubGet('/quote?symbol=' + tk).then(q => ({ tk, q })));
-      const quotes = await batchRun(quoteTasks, 20, 21000, (done, total) => setProgress(done / total * 0.3));
-      const priced = quotes.filter(x => x && x.q && x.q.c > 0);
-
-      // ── Stage 1b: earnings dates (throttled) ────────────────
-      setPhase('Stage 2/3 — checking earnings dates');
       const from = todayStr();
       const toDate = new Date(); toDate.setDate(toDate.getDate() + 60);
       const to = toDate.toISOString().slice(0, 10);
-      const earnTasks = priced.map(x => () =>
-        finnhubGet('/calendar/earnings?from=' + from + '&to=' + to + '&symbol=' + x.tk)
-          .then(e => ({ tk: x.tk, earnings: (e.earningsCalendar && e.earningsCalendar[0] && e.earningsCalendar[0].date) || null }))
+      const earnTasks = universe.map(tk => () =>
+        finnhubGet('/calendar/earnings?from=' + from + '&to=' + to + '&symbol=' + tk)
+          .then(e => ({ tk, earnings: (e.earningsCalendar && e.earningsCalendar[0] && e.earningsCalendar[0].date) || null }))
       );
-      const earnings = await batchRun(earnTasks, 20, 21000, (done, total) => setProgress(0.3 + done / total * 0.3));
+      const earnings = await batchRun(earnTasks, 20, 21000, (done, total) => setProgress(done / total * 0.45));
       const earnMap = {};
       earnings.forEach(e => { if (e) earnMap[e.tk] = e.earnings; });
 
-      // Survivors: have a price; cap at 14 to keep stage 3 sane
-      const survivors = priced.slice(0, 40);
-
-      // ── Stage 3: option chains via Yahoo ────────────────────
-      setPhase('Stage 3/3 — analyzing option chains');
+      // ── Stage 2: option chains (marketdata.app, parallel) ────
+      setPhase('Stage 2/2 — analyzing option chains');
       let done = 0;
-      for (const { tk, q } of survivors) {
-        if (candidates.length >= 24) break;
-        done++;
-        setProgress(0.6 + (done / survivors.length) * 0.4);
-        setPhase('Stage 3/3 — ' + tk + ' (' + done + '/' + survivors.length + ')');
-        try {
-          const spot = q.c;
-          const root = await yahooGet('https://query1.finance.yahoo.com/v7/finance/options/' + tk);
-          const res0 = root && root.optionChain && root.optionChain.result && root.optionChain.result[0];
-          if (!res0 || !res0.expirationDates || !res0.expirationDates.length) continue;
+      const chainBatch = 4;
+      for (let i = 0; i < universe.length; i += chainBatch) {
+        const slice = universe.slice(i, i + chainBatch);
+        await Promise.all(slice.map(async tk => {
+          done++;
+          setProgress(0.45 + (done / universe.length) * 0.55);
+          chainsTried++;
+          try {
+            // One call: OTM contracts (both sides) at the expiry closest to 35 DTE.
+            const md = await mdGet('/options/chain/' + tk + '/?dte=35&range=otm');
+            if (!md || md.s !== 'ok' || !md.strike || !md.strike.length) return;
+            chainsOk++;
 
-          // Pick expiry closest to 35 DTE within 21-55
-          let bestExp = null, bestDist = 1e9;
-          for (const ep of res0.expirationDates) {
-            const dte = (ep * 1000 - nowMs) / 86400000;
-            if (dte < 21 || dte > 55) continue;
-            const dist = Math.abs(dte - 35);
-            if (dist < bestDist) { bestDist = dist; bestExp = ep; }
-          }
-          if (!bestExp) continue;
-          const dte = Math.round((bestExp * 1000 - nowMs) / 86400000);
-          const expiryStr = new Date(bestExp * 1000).toISOString().slice(0, 10);
-          const T = dte / 365;
+            const rows = md.strike.map((k, ix) => ({
+              side: md.side[ix], strike: k,
+              bid: md.bid ? md.bid[ix] : 0, ask: md.ask ? md.ask[ix] : 0,
+              oi: md.openInterest ? md.openInterest[ix] : 0,
+              iv: md.iv ? md.iv[ix] : null,
+              delta: md.delta ? md.delta[ix] : null,
+              exp: md.expiration[ix], dte: md.dte ? md.dte[ix] : null
+            }));
 
-          // Earnings inside the option window (+3d buffer) → skip entirely
-          const earn = earnMap[tk];
-          if (earn && earn <= expiryStr) continue;
+            const dte = rows[0].dte;
+            if (dte == null || dte < 21 || dte > 55) return;
+            const expiryStr = new Date(rows[0].exp * 1000).toISOString().slice(0, 10);
+            const spot = md.underlyingPrice && md.underlyingPrice[0] ? md.underlyingPrice[0] : null;
+            if (!spot) return;
 
-          const chainData = await yahooGet('https://query1.finance.yahoo.com/v7/finance/options/' + tk + '?date=' + bestExp);
-          const chain = chainData && chainData.optionChain && chainData.optionChain.result && chainData.optionChain.result[0] && chainData.optionChain.result[0].options && chainData.optionChain.result[0].options[0];
-          if (!chain) continue;
+            // Earnings inside the option window → skip entirely
+            const earn = earnMap[tk];
+            if (earn && earn <= expiryStr) return;
 
-          const puts = (chain.puts || []).filter(c => goodContract(c));
-          const calls = (chain.calls || []).filter(c => goodContract(c));
+            const puts  = rows.filter(r => r.side === 'put'  && contractOk(r));
+            const calls = rows.filter(r => r.side === 'call' && contractOk(r));
 
-          // ATM IV estimate for vol context
-          const atmPut = (chain.puts || []).reduce((best, c) =>
-            (!best || Math.abs(c.strike - spot) < Math.abs(best.strike - spot)) ? c : best, null);
-          const atmIv = atmPut && atmPut.impliedVolatility ? atmPut.impliedVolatility : null;
+            // Vol context: IV of the nearest-to-money put
+            const nearPut = rows.filter(r => r.side === 'put' && r.iv)
+              .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot))[0];
+            const atmIv = nearPut ? nearPut.iv : null;
 
-          // ── Wheel candidate: best put in 0.12–0.30 |delta| band ──
-          let bestPut = null;
-          for (const c of puts) {
-            if (c.strike >= spot) continue;
-            const iv = c.impliedVolatility || atmIv;
-            const delta = bsPutDelta(spot, c.strike, T, iv, SCAN_RISK_FREE);
-            if (delta == null || Math.abs(delta) < 0.12 || Math.abs(delta) > 0.30) continue;
-            const prem = c.bid;
-            const cap = c.strike * 100;
-            const annR = (prem * 100 / cap) * (365 / dte);
-            const be = c.strike - prem;
-            const cushion = (spot - be) / spot;
-            const cand = { tk, spot, strategy: 'Naked Put', putCall: 'P', strike1: c.strike, strike2: null, expiry: expiryStr, dte, prem, cap, annR, cushion, iv, delta: Math.abs(delta), oi: c.openInterest, earn };
-            if (!bestPut || cand.annR > bestPut.annR) bestPut = cand;
-          }
-          if (bestPut) candidates.push(bestPut);
+            // ── Wheel candidate: best put in 0.12–0.30 |delta| band ──
+            let bestPut = null;
+            for (const r of puts) {
+              if (r.strike >= spot || r.delta == null) continue;
+              const ad = Math.abs(r.delta);
+              if (ad < 0.12 || ad > 0.30) continue;
+              const prem = r.bid;
+              const cap = r.strike * 100;
+              const annR = (prem * 100 / cap) * (365 / dte);
+              const be = r.strike - prem;
+              const cushion = (spot - be) / spot;
+              const cand = { tk, spot, strategy: 'Naked Put', putCall: 'P', strike1: r.strike, strike2: null, expiry: expiryStr, dte, prem, cap, annR, cushion, iv: r.iv, delta: ad, oi: r.oi, earn };
+              if (!bestPut || cand.annR > bestPut.annR) bestPut = cand;
+            }
+            if (bestPut) candidates.push(bestPut);
 
-          // ── Bull put spread: when vol is elevated (ATM IV ≥ 30%) ──
-          if (bestPut && atmIv && atmIv >= 0.30) {
-            const shortC = puts.find(c => c.strike === bestPut.strike1);
-            const longC = puts
-              .filter(c => c.strike < bestPut.strike1 && bestPut.strike1 - c.strike >= 5 && bestPut.strike1 - c.strike <= 10 && c.ask > 0)
-              .sort((a, b) => b.strike - a.strike)[0];
-            if (shortC && longC) {
-              const credit = shortC.bid - longC.ask;
-              const width = bestPut.strike1 - longC.strike;
-              if (credit > 0.1 && credit / width >= 0.12) {
-                const cap = (width - credit) * 100;
-                const annR = (credit * 100 / cap) * (365 / dte);
-                candidates.push({ tk, spot, strategy: 'Bull Put Spread', putCall: 'P', strike1: bestPut.strike1, strike2: longC.strike, expiry: expiryStr, dte, prem: credit, cap, annR, cushion: bestPut.cushion, iv: atmIv, delta: bestPut.delta, oi: shortC.openInterest, earn });
+            // ── Bull put spread: when vol is elevated (ATM IV ≥ 30%) ──
+            if (bestPut && atmIv && atmIv >= 0.30) {
+              const shortR = puts.find(r => r.strike === bestPut.strike1);
+              const longR = puts
+                .filter(r => r.strike < bestPut.strike1 && bestPut.strike1 - r.strike >= 5 && bestPut.strike1 - r.strike <= 10 && r.ask > 0)
+                .sort((a, b) => b.strike - a.strike)[0];
+              if (shortR && longR) {
+                const credit = shortR.bid - longR.ask;
+                const width = bestPut.strike1 - longR.strike;
+                if (credit > 0.1 && credit / width >= 0.12) {
+                  const cap = (width - credit) * 100;
+                  const annR = (credit * 100 / cap) * (365 / dte);
+                  candidates.push({ tk, spot, strategy: 'Bull Put Spread', putCall: 'P', strike1: bestPut.strike1, strike2: longR.strike, expiry: expiryStr, dte, prem: credit, cap, annR, cushion: bestPut.cushion, iv: atmIv, delta: bestPut.delta, oi: shortR.oi, earn });
+                }
               }
             }
-          }
 
-          // ── Bear call spread: only near 52w-high territory + hot IV ──
-          if (atmIv && atmIv >= 0.40 && calls.length) {
-            let shortCall = null;
-            for (const c of calls) {
-              if (c.strike <= spot) continue;
-              const iv = c.impliedVolatility || atmIv;
-              const delta = bsCallDelta(spot, c.strike, T, iv, SCAN_RISK_FREE);
-              if (delta == null || delta < 0.15 || delta > 0.28) continue;
-              if (!shortCall || c.strike < shortCall.strike) shortCall = { ...c, delta };
-            }
-            const longCall = shortCall && calls
-              .filter(c => c.strike > shortCall.strike && c.strike - shortCall.strike >= 5 && c.strike - shortCall.strike <= 10 && c.ask > 0)
-              .sort((a, b) => a.strike - b.strike)[0];
-            if (shortCall && longCall) {
-              const credit = shortCall.bid - longCall.ask;
-              const width = longCall.strike - shortCall.strike;
-              if (credit > 0.1 && credit / width >= 0.15) {
-                const cap = (width - credit) * 100;
-                const annR = (credit * 100 / cap) * (365 / dte);
-                candidates.push({ tk, spot, strategy: 'Bear Call Spread', putCall: 'C', strike1: shortCall.strike, strike2: longCall.strike, expiry: expiryStr, dte, prem: credit, cap, annR, cushion: (shortCall.strike - spot) / spot, iv: atmIv, delta: shortCall.delta, oi: shortCall.openInterest, earn, aggressive: true });
+            // ── Bear call spread: only in hot vol (IV ≥ 40%) ─────
+            if (atmIv && atmIv >= 0.40 && calls.length) {
+              let shortCall = null;
+              for (const r of calls) {
+                if (r.strike <= spot || r.delta == null) continue;
+                if (r.delta < 0.15 || r.delta > 0.28) continue;
+                if (!shortCall || r.strike < shortCall.strike) shortCall = r;
+              }
+              const longCall = shortCall && calls
+                .filter(r => r.strike > shortCall.strike && r.strike - shortCall.strike >= 5 && r.strike - shortCall.strike <= 10 && r.ask > 0)
+                .sort((a, b) => a.strike - b.strike)[0];
+              if (shortCall && longCall) {
+                const credit = shortCall.bid - longCall.ask;
+                const width = longCall.strike - shortCall.strike;
+                if (credit > 0.1 && credit / width >= 0.15) {
+                  const cap = (width - credit) * 100;
+                  const annR = (credit * 100 / cap) * (365 / dte);
+                  candidates.push({ tk, spot, strategy: 'Bear Call Spread', putCall: 'C', strike1: shortCall.strike, strike2: longCall.strike, expiry: expiryStr, dte, prem: credit, cap, annR, cushion: (shortCall.strike - spot) / spot, iv: atmIv, delta: shortCall.delta, oi: shortCall.oi, earn, aggressive: true });
+                }
               }
             }
+          } catch (err) {
+            if (err.message === 'quota') quotaHit = true;
           }
-        } catch (_) { /* skip ticker on any failure */ }
+        }));
       }
 
       candidates.sort((a, b) => b.annR - a.annR);
@@ -234,7 +201,12 @@ function Scanner({ onPick }) {
       const payload = { at: new Date().toISOString(), universeSize: universe.length, results: top };
       setResults(payload);
       try { localStorage.setItem('opt_scan_cache', JSON.stringify(payload)); } catch {}
-      if (!top.length) setError('Scan completed but no candidates passed the filters. Vol may be low across the board, or the option-chain source was unreachable — try again in a minute.');
+
+      if (!top.length) {
+        if (quotaHit) setError('marketdata.app daily quota exhausted (100 calls/day on the free tier). Try again tomorrow, or shrink the universe.');
+        else if (chainsOk === 0) setError('No option chains could be fetched (' + chainsTried + ' attempted). If markets just closed for a holiday, data may be unavailable — otherwise check the marketdata.app token.');
+        else setError('Chains fetched for ' + chainsOk + ' tickers, but no contracts passed the filters (delta 0.12-0.30, OI ≥ 100, tight spreads, earnings-clear). Vol may simply be low across your universe today.');
+      }
     } catch (err) {
       setError('Scan failed: ' + err.message);
     }
@@ -262,7 +234,7 @@ function Scanner({ onPick }) {
         h('div', null,
           h('div', { style: { fontWeight: 500, marginBottom: 2 } }, 'Candidate scanner'),
           h('div', { style: { fontSize: 11, color: 'var(--text2)' } },
-            universe.length + ' tickers in universe · earnings-cleared 21-55 DTE · scan takes ~2 min (API rate limits)')
+            universe.length + ' tickers · earnings-cleared · 21-55 DTE · ~40s scan · ~3 scans/day (data quota)')
         ),
         h('div', { style: { display: 'flex', gap: 6 } },
           h('button', { className: 'btn btn-sm', onClick: () => setShowSettings(s => !s) }, 'Universe'),
@@ -273,7 +245,7 @@ function Scanner({ onPick }) {
 
       showSettings && h('div', { style: { marginTop: 12 } },
         h('label', { style: { fontSize: 11, color: 'var(--text2)', display: 'block', marginBottom: 4 } },
-          'Tickers to scan (comma or space separated). Fewer = faster scan.'),
+          'Tickers to scan (comma or space separated). Fewer tickers = more scans per day within the data quota.'),
         h('textarea', { rows: 3, value: universeText, onChange: e => setUniverseText(e.target.value), style: { width: '100%', fontSize: 12 } }),
         h('div', { style: { marginTop: 6 } },
           h('button', { className: 'btn btn-sm btn-primary', onClick: saveUniverse }, 'Save universe'))
@@ -324,7 +296,7 @@ function Scanner({ onPick }) {
         )
       ),
       h('div', { style: { fontSize: 11, color: 'var(--text2)', marginTop: 4 } },
-        'Candidates are math-screened only — bid prices from delayed data. Verify the live premium at your broker and run the EV/Edge checklist before entering. IV/HV needs your broker\'s HV number.')
+        'Candidates are math-screened only — data may be delayed. Verify the live premium at your broker and run the EV/Edge checklist before entering.')
     )
   );
 }
