@@ -29,7 +29,18 @@ function CapitalRisk({ trades, prices }) {
   });
 
   const total = nakedCap + spreadMax + assVal;
-  const sgov  = 25000;
+
+  // Editable cash reserve (was hardcoded $25k SGOV) — persisted locally
+  const [reserve, setReserve] = useState(() => {
+    try { const v = parseFloat(localStorage.getItem('opt_reserve')); return v > 0 ? v : 25000; }
+    catch { return 25000; }
+  });
+  const updateReserve = v => {
+    const n = parseFloat(v);
+    setReserve(isNaN(n) ? 0 : n);
+    try { localStorage.setItem('opt_reserve', String(isNaN(n) ? 0 : n)); } catch {}
+  };
+  const sgov  = reserve > 0 ? reserve : 1;
   const util  = total / sgov;
   const uc    = util > 1 ? '#a32d2d' : util > 0.8 ? '#854f0b' : '#27500a';
 
@@ -49,7 +60,15 @@ function CapitalRisk({ trades, prices }) {
 
     h('div', { className: 'card' },
       h('div', { style: { display: 'flex', justifyContent: 'space-between', marginBottom: 6 } },
-        h('span', { className: 'sec', style: { marginBottom: 0 } }, 'Utilization vs SGOV $25k'),
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+          h('span', { className: 'sec', style: { marginBottom: 0 } }, 'Utilization vs cash reserve'),
+          h('input', {
+            type: 'number', value: reserve, step: 1000, min: 0,
+            onChange: e => updateReserve(e.target.value),
+            title: 'Your total capital base (SGOV + cash). Edit anytime — saved automatically.',
+            style: { width: 90, fontSize: 12, padding: '3px 6px' }
+          })
+        ),
         h('span', { style: { fontWeight: 500, color: uc, fontSize: 13 } }, (Math.min(util, 9.99) * 100).toFixed(1) + '%')
       ),
       h('div', { className: 'util-bar' },
