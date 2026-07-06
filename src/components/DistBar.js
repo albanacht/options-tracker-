@@ -23,10 +23,6 @@ function DistBar({ t, price }) {
       h('div', { className: 'strike-mk', style: { left: sp + '%' } }),
       s2p != null && h('div', { className: 'strike-mk', style: { left: s2p + '%', background: 'var(--text3)' } }),
       h('div', { className: 'price-dot', style: { left: pp + '%', background: col } })
-    ),
-    h('div', { className: 'dist-footer' },
-      h('span', null, 'K=' + f$(s1, 2) + (s2p != null ? ' / ' + f$(s2, 2) : '')),
-      h('span', { style: { color: 'var(--text)', fontWeight: 500 } }, 'Price=' + f$(price, 2))
     )
   );
 }
