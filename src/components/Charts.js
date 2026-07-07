@@ -1,7 +1,8 @@
 function Charts({ trades, prices }) {
-  const lineRef = useRefC(null);
-  const barRef  = useRefC(null);
-  const charts  = useRefC({});
+  const lineRef  = useRefC(null);
+  const barRef   = useRefC(null);
+  const yieldRef = useRefC(null);
+  const charts   = useRefC({});
 
   const closed   = trades.filter(t => t.outcome && t.outcome !== 'Open');
   const assigned = trades.filter(t => t.outcome === 'Assigned');
@@ -39,6 +40,82 @@ function Charts({ trades, prices }) {
       return { month: m.month, realized: Math.round(cumR), unrealized: Math.round(unreal), net: Math.round(cumR + unreal) };
     });
   }, [monthly, assigned, prices]);
+
+  // ── Return on deployed capital, monthly ──────────────────────
+  // Capital is time-weighted: each position contributes (collateral ×
+  // days it was open within the month). Realized P&L is booked in the
+  // month the position actually resolved (close date / expiry), so the
+  // yield reflects cash actually captured, not premium still at risk.
+  const yieldData = useMemoC(() => {
+    return monthly.map(({ month: mo }) => {
+      const [y, mm] = mo.split('-').map(Number);
+      const mStart      = new Date(y, mm - 1, 1);
+      const daysInMonth = new Date(y, mm, 0).getDate();
+      const mEnd        = new Date(y, mm - 1, daysInMonth);
+
+      let capDays = 0;
+      trades.forEach(t => {
+        const dc = deployedCapital(t);
+        if (dc <= 0) return;
+        const span = tradeSpan(t);
+        if (!span) return;
+        const start = span[0] > mStart ? span[0] : mStart;
+        const end   = span[1] < mEnd  ? span[1] : mEnd;
+        const od    = daysBetween(start, end) + 1; // inclusive
+        if (od > 0) capDays += dc * od;
+      });
+      const avgCap = daysInMonth > 0 ? capDays / daysInMonth : 0;
+
+      let realized = 0;
+      trades.forEach(t => {
+        if (!t.outcome || t.outcome === 'Open') return;
+        const m = calcMetrics(t);
+        if (m.pnl == null) return;
+        const rd = t.dateClosed || t.expiry;
+        if (rd && rd.slice(0, 7) === mo) realized += m.pnl;
+      });
+
+      const roc = avgCap > 0 ? realized / avgCap : 0;
+      return { month: mo, avgCap: Math.round(avgCap), realized: Math.round(realized), roc };
+    });
+  }, [monthly, trades]);
+
+  // ── Yield by risk tier (annualized) ──────────────────────────
+  // Groups trades by entry delta (fallback: break-even cushion) and
+  // reports return per capital-year deployed = realized P&L ÷
+  // Σ(collateral × days held / 365). This is the honest risk lens:
+  // did taking more assignment risk actually pay proportionally more?
+  const bucketData = useMemoC(() => {
+    const order = ['Conservative', 'Moderate', 'Aggressive', 'Unclassified'];
+    const agg = {};
+    order.forEach(k => agg[k] = { tier: k, capYears: 0, realized: 0, count: 0, wins: 0, closed: 0 });
+    trades.forEach(t => {
+      const a = agg[riskTier(t)];
+      const dc = deployedCapital(t);
+      const span = tradeSpan(t);
+      if (dc > 0 && span) {
+        const days = daysBetween(span[0], span[1]) + 1;
+        a.capYears += dc * days / 365;
+      }
+      a.count++;
+      if (t.outcome && t.outcome !== 'Open') {
+        const m = calcMetrics(t);
+        if (m.pnl != null) {
+          a.realized += m.pnl;
+          a.closed++;
+          if (['Expired Worthless','Bought Back','Closed Profit'].includes(t.outcome)) a.wins++;
+        }
+      }
+    });
+    return order.map(k => {
+      const a = agg[k];
+      return { ...a, annYield: a.capYears > 0 ? a.realized / a.capYears : null, wr: a.closed ? a.wins / a.closed : null };
+    }).filter(a => a.count > 0);
+  }, [trades]);
+
+  const tierColor = t => t === 'Conservative' ? '#3b6d11'
+    : t === 'Moderate' ? '#854f0b'
+    : t === 'Aggressive' ? '#a32d2d' : '#777';
 
   useEffectC(() => {
     if (!lineRef.current || !cumData.length) return;
@@ -87,6 +164,35 @@ function Charts({ trades, prices }) {
     });
   }, [monthly]);
 
+  useEffectC(() => {
+    if (!yieldRef.current || !yieldData.length) return;
+    if (charts.current.yield) charts.current.yield.destroy();
+    const sgovMo = SGOV_YIELD / 12;
+    charts.current.yield = new Chart(yieldRef.current, {
+      type: 'bar',
+      data: {
+        labels: yieldData.map(d => d.month),
+        datasets: [
+          { label: 'Return on deployed capital', data: yieldData.map(d => +(d.roc * 100).toFixed(2)),
+            backgroundColor: yieldData.map(d => d.roc < 0 ? '#f09595' : d.roc >= sgovMo ? '#97c459' : '#f0b95f'), borderRadius: 3 },
+          { type: 'line', label: 'SGOV baseline', data: yieldData.map(() => +(sgovMo * 100).toFixed(3)),
+            borderColor: '#7a869a', borderWidth: 1.5, borderDash: [5, 4], pointRadius: 0, fill: false, tension: 0 },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(2) + '%' } }
+        },
+        scales: {
+          x: { ticks: { font: { size: 10 }, maxRotation: 45 } },
+          y: { ticks: { font: { size: 10 }, callback: v => v.toFixed(1) + '%' } }
+        }
+      }
+    });
+  }, [yieldData]);
+
   const totalRealized = closed.reduce((s, t) => { const m = calcMetrics(t); return s + (m.pnl || 0); }, 0);
   const totalPrem     = trades.reduce((s, t) => s + (parseFloat(t.premiumReceived) || 0) * 100 * (parseInt(t.contracts) || 1), 0);
   const wins          = closed.filter(t => ['Expired Worthless','Bought Back','Closed Profit'].includes(t.outcome)).length;
@@ -131,6 +237,48 @@ function Charts({ trades, prices }) {
       h('div', { style: { position: 'relative', height: 180 } },
         h('canvas', { ref: barRef, role: 'img', 'aria-label': 'Monthly premium collected and realized P&L bar chart' }, 'Monthly P&L chart.')
       )
+    ),
+
+    yieldData.length > 0 && h('div', { className: 'card' },
+      h('div', { className: 'sec' }, 'Return on deployed capital — monthly'),
+      h('div', { className: 'chart-legend' },
+        h('span', null, h('span', { className: 'legend-box', style: { background: '#97c459' } }), ' Beat SGOV'),
+        h('span', null, h('span', { className: 'legend-box', style: { background: '#f0b95f' } }), ' Below SGOV'),
+        h('span', null, h('span', { className: 'legend-box', style: { background: '#f09595' } }), ' Negative'),
+        h('span', null, h('span', { className: 'legend-line', style: { background: '#7a869a' } }), ' SGOV baseline (' + fp(SGOV_YIELD / 12) + '/mo)')
+      ),
+      h('div', { style: { position: 'relative', height: 180 } },
+        h('canvas', { ref: yieldRef, role: 'img', 'aria-label': 'Monthly return on deployed capital versus SGOV baseline' }, 'Monthly return on deployed capital chart.')
+      ),
+
+      h('div', { className: 'sec', style: { marginTop: 18 } }, 'Yield by risk tier (annualized)'),
+      h('div', { className: 'table-wrap' },
+        h('table', null,
+          h('thead', null, h('tr', null,
+            ['Risk tier','Trades','Realized P&L','Ann. yield on deployed $','Win rate'].map(c => h('th', { key: c }, c))
+          )),
+          h('tbody', null,
+            bucketData.map(b => h('tr', { key: b.tier },
+              h('td', null, h('span', {
+                style: { background: tierColor(b.tier), color: '#fff', fontSize: 10, padding: '2px 7px', borderRadius: 4, whiteSpace: 'nowrap' }
+              }, b.tier)),
+              h('td', null, b.count),
+              h('td', { className: b.realized >= 0 ? 'pos-green' : 'pos-red' }, (b.realized >= 0 ? '+' : '') + f$(b.realized)),
+              h('td', null, h('span', { className: 'rocp', style: { color: b.annYield == null ? '#777' : b.annYield >= SGOV_YIELD ? '#185fa5' : '#854f0b' } }, b.annYield != null ? fp(b.annYield) : '—')),
+              h('td', null, b.wr != null ? fp(b.wr) : '—')
+            )),
+            h('tr', { style: { borderTop: '2px solid #d8d8d8' } },
+              h('td', null, h('em', { style: { color: '#555' } }, 'SGOV (risk-free)')),
+              h('td', null, '—'),
+              h('td', null, '—'),
+              h('td', null, h('span', { className: 'rocp', style: { color: '#7a869a' } }, fp(SGOV_YIELD))),
+              h('td', null, '—')
+            )
+          )
+        )
+      ),
+      h('div', { style: { fontSize: 11, color: '#777', marginTop: 8, lineHeight: 1.5 } },
+        'Yield = realized P&L ÷ capital-years deployed (collateral × days held). Tiers by entry delta; falls back to break-even cushion when delta is blank. Covered-call collateral = share value; naked calls excluded. A tier beating SGOV by little is being under-paid for its assignment risk.')
     ),
 
     h('div', { className: 'card' },
