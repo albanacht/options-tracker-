@@ -56,29 +56,63 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
       // ── Black-Scholes estimated option price + theta ─────────
       // Uses stored entry IV when available; otherwise assumes a
       // conservative 25% (roughly S&P average) and flags it visually.
+      // For spreads, estOpt is the NET value (short leg − long leg) so
+      // the number is comparable to the credit received, not a single
+      // naked leg worth many times more.
+      const s2 = parseFloat(t.strike2) || 0;
       const storedIv = parseFloat(t.iv) || null;
       const ivAssumed = !storedIv;
       const iv = storedIv || 0.25;
       const T  = dLeft != null && dLeft > 0 ? dLeft / 365 : null;
-      const estOpt = (price && T) ? bsPrice(price, s1, T, iv, t.putCall === 'P') : null;
+      const isPutLeg = t.putCall === 'P';
+
+      const legVal = (K, tt) => bsPrice(price, K, tt, iv, isPutLeg);
+      const netVal = (tt) => (isS && s2)
+        ? legVal(s1, tt) - legVal(s2, tt)
+        : legVal(s1, tt);
+
+      const estOpt = (price && T) ? netVal(T) : null;
       const pctOfPrem = (estOpt != null && prem > 0) ? estOpt / prem : null;
       const thetaDay = (estOpt != null && T > 1 / 365)
-        ? (estOpt - bsPrice(price, s1, T - 1 / 365, iv, t.putCall === 'P')) * 100 * con
+        ? (estOpt - netVal(T - 1 / 365)) * 100 * con
         : null;
 
-      // Live P&L: BS estimate when IV is stored, intrinsic otherwise
+      // Live P&L: net BS estimate when priceable, intrinsic otherwise
       let livePnl = null;
       if (price && prem) {
-        const optVal = estOpt != null ? estOpt
-          : (t.putCall === 'P' ? Math.max(0, s1 - price) : Math.max(0, price - s1));
+        let optVal;
+        if (estOpt != null) {
+          optVal = estOpt;
+        } else if (isS && s2) {
+          const shortIntr = isPutLeg ? Math.max(0, s1 - price) : Math.max(0, price - s1);
+          const longIntr  = isPutLeg ? Math.max(0, s2 - price) : Math.max(0, price - s2);
+          optVal = shortIntr - longIntr;
+        } else {
+          optVal = isPutLeg ? Math.max(0, s1 - price) : Math.max(0, price - s1);
+        }
         livePnl = (prem - optVal) * 100 * con;
       }
       const captured = (livePnl != null && prem > 0) ? livePnl / (prem * 100 * con) : null;
 
+      // ── Spread doubled-loss alert ─────────────────────────────
+      // Rule: close a spread in loss once its value ≈ 2× the credit
+      // received (down ~1× credit). estOpt is the live net value.
+      const spreadLossMult = (isS && estOpt != null && prem > 0) ? estOpt / prem : null;
+      const spreadAlert = spreadLossMult != null && spreadLossMult >= 2;
+
+      // ── Covered-call yield (ROCAR is 0 by design — no collateral) ──
+      // Meaningful CC metric = premium ÷ shares' notional value.
+      const ccYield = (m.isCoveredCall && s1 > 0)
+        ? (prem * 100 * con) / (s1 * 100 * con)
+        : null;
+      const ccYieldAnn = (ccYield != null && (parseInt(t.dte) || 0) > 0)
+        ? ccYield * (365 / parseInt(t.dte))
+        : null;
+
       // ── Border semantics: green = deep OTM / buyback candidate,
       //    amber = normal, red = ITM ────────────────────────────
       let alertCls = 'pos-card card alert-amber';
-      if (isItm) alertCls = 'pos-card card alert-red';
+      if (isItm || spreadAlert) alertCls = 'pos-card card alert-red';
       else if ((dist != null && dist >= 0.10) || (captured != null && captured >= 0.7))
         alertCls = 'pos-card card alert-green';
 
@@ -106,7 +140,11 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
             livePnl != null && h('span', {
               className: 'badge ' + (livePnl >= 0 ? 'badge-green' : 'badge-red')
             }, (livePnl >= 0 ? '+' : '') + f$(livePnl)),
-            h('span', { className: 'rocp' }, fp(m.annR) + ' ann.')
+            spreadAlert && h('span', { className: 'badge badge-red', title: 'Spread value ≈ ' + spreadLossMult.toFixed(1) + '× your credit — your rule says close in loss here' },
+              '⚠ close: ' + spreadLossMult.toFixed(1) + '× credit'),
+            m.isCoveredCall
+              ? (ccYieldAnn != null && h('span', { className: 'rocp', title: 'Premium ÷ shares value, annualized' }, fp(ccYieldAnn) + ' yield'))
+              : h('span', { className: 'rocp' }, fp(m.annR) + ' ann.')
           )
         ),
 
@@ -173,6 +211,15 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
             h('span', { className: 'pos-stat-label' }, 'Θ est./day '),
             h('strong', { style: { color: ivAssumed ? '#854f0b' : '#3b6d11' } },
               (ivAssumed ? '~+' : '+') + f$(thetaDay, 2))),
+          m.isCoveredCall && ccYieldAnn != null && h('div', null,
+            h('span', { className: 'pos-stat-label' }, 'CC yield '),
+            h('strong', { style: { color: '#185fa5' } }, fp(ccYieldAnn) + ' ann.'),
+            h('span', { style: { color: 'var(--text2)', fontSize: 10 } }, ' (' + fp(ccYield) + ' period)')),
+          isS && estOpt != null && h('div', null,
+            h('span', { className: 'pos-stat-label' }, 'Spread now '),
+            h('strong', { style: { color: spreadAlert ? '#a32d2d' : 'var(--text)' } },
+              (ivAssumed ? '~' : '') + f$(estOpt * 100 * con)),
+            h('span', { style: { color: 'var(--text2)', fontSize: 10 } }, ' vs ' + f$(prem100 * con) + ' credit')),
           h('div', null,
             h('span', { className: 'pos-stat-label' }, '50% '),
             h('strong', null, f$(prem100 * 0.5)),
