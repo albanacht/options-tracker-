@@ -18,7 +18,7 @@ function bsPrice(S, K, T, sigma, isPut) {
 
 function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateTrade }) {
   const [closing, setClosing] = useStateAM(null);
-  const open = trades.filter(t => t.outcome === 'Open');
+  const open = trades.filter(t => t.outcome === 'Open').slice().reverse();
   const tod  = today();
 
   if (!open.length) return h('div', { className: 'empty' },
