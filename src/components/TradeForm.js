@@ -8,6 +8,21 @@ function TradeForm({ onSave, initial, onCancel }) {
 
   const up = (k, v) => setT(p => ({ ...p, [k]: v }));
 
+  // Auto-derive putCall from strategy — only show Put/Call selector for ambiguous strategies
+  const STRAT_PUTCALL = {
+    'Naked Put': 'P', 'Cash Secured Put': 'P', 'Covered Call': 'C',
+    'Naked Call': 'C', 'Bull Put Spread': 'P', 'Bear Call Spread': 'C'
+  };
+  const impliedPutCall = STRAT_PUTCALL[t.strategy] || null;
+  const showPutCall = impliedPutCall === null; // only show for Iron Condor etc.
+
+  // Sync putCall when strategy changes to an unambiguous one
+  useEffect(() => {
+    if (impliedPutCall && t.putCall !== impliedPutCall) {
+      up('putCall', impliedPutCall);
+    }
+  }, [t.strategy]);
+
   // Auto-calculate DTE whenever both dates are present, unless user manually overrides it
   const [dteOverridden, setDteOverridden] = useState(false);
 
@@ -55,7 +70,7 @@ function TradeForm({ onSave, initial, onCancel }) {
       field('Date opened', 'dateOpened', 'date'),
       field('Ticker', 'ticker'),
       select('Strategy', 'strategy', STRATS),
-      select('Put / Call', 'putCall', ['P', 'C']),
+      showPutCall && select('Put / Call', 'putCall', ['P', 'C']),
       field('Strike', 'strike1', 'number', { placeholder: '285', step: '0.5' }),
       isS && field('Strike 2 (lower leg)', 'strike2', 'number', { placeholder: '275', step: '0.5' }),
       field('Expiry date', 'expiry', 'date'),
