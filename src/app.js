@@ -2,6 +2,7 @@ const TABS = [
   { id: 'monitor',   label: 'Monitor',       icon: 'ti-eye' },
   { id: 'logger',    label: 'Log trade',      icon: 'ti-plus' },
   { id: 'wheel',     label: 'Wheel cycles',   icon: 'ti-refresh' },
+  { id: 'timeline',  label: 'Timeline',       icon: 'ti-timeline' },
   { id: 'risk',      label: 'Capital at risk',icon: 'ti-shield' },
   { id: 'charts',    label: 'Charts',         icon: 'ti-chart-bar' },
   { id: 'watchlist', label: 'Watchlist',      icon: 'ti-list' },
@@ -186,6 +187,7 @@ function App() {
     ),
 
     tab === 'wheel'     && h(WheelCycles,   { trades, prices, onUpdateTrade: saveTrade, onAddTrade: addTrade }),
+    tab === 'timeline'  && h(Timeline,       { trades, prices }),
     tab === 'risk'      && h(CapitalRisk,    { trades, prices }),
     tab === 'charts'    && h(Charts,         { trades, prices }),
     tab === 'watchlist' && h(Watchlist,      { watchlist, setWatchlist, prices, loadingPrices: loading, refresh: doFetchPrices }),
