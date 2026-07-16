@@ -2,7 +2,8 @@ function legColor(t) {
   if (t.outcome === 'Assigned') return '#185fa5';
   if (t.strategy === 'Covered Call') return '#1d9e75';
   if (t.outcome === 'Open') return '#ef9f27';
-  if (t.outcome === 'Expired Worthless' || t.outcome === 'Bought Back' || t.outcome === 'Closed Profit') return '#7ab648';
+  if (t.outcome === 'Expired Worthless') return '#7ab648';                            // won — let it expire (base green)
+  if (t.outcome === 'Bought Back' || t.outcome === 'Closed Profit') return '#a6d46f';  // won — bought back / closed early (lighter green)
   if (t.outcome === 'Closed Loss' || t.outcome === 'Max Loss') return '#d65c5c';
   return '#9196b0';
 }
@@ -26,7 +27,14 @@ function getMonday(d) {
 
 function GanttChart({ trades }) {
   const relevant = trades.filter(t => t.dateOpened && t.ticker);
-  const tickers = [...new Set(relevant.map(t => t.ticker))].filter(Boolean);
+
+  // Active tickers (something still open) float to the top, then by most
+  // recent activity — keeps what's live from getting buried under history.
+  const hasOpen = tk => trades.some(t => t.ticker === tk && t.outcome === 'Open');
+  const lastAct = tk => trades.filter(t => t.ticker === tk && t.dateOpened)
+    .reduce((mx, t) => t.dateOpened > mx ? t.dateOpened : mx, '');
+  const tickers = [...new Set(relevant.map(t => t.ticker))].filter(Boolean)
+    .sort((a, b) => (hasOpen(b) - hasOpen(a)) || lastAct(b).localeCompare(lastAct(a)));
 
   if (!tickers.length) return h('div', { style: { fontSize: 11, color: 'var(--text2)' } }, 'No trades to display yet.');
 
@@ -165,7 +173,8 @@ function GanttChart({ trades }) {
     h('div', { className: 'gantt-legend' },
       h('span', null, h('span', { className: 'dot', style: { background: '#185fa5' } }), ' Put / assigned'),
       h('span', null, h('span', { className: 'dot', style: { background: '#1d9e75' } }), ' Covered call'),
-      h('span', null, h('span', { className: 'dot', style: { background: '#7ab648' } }), ' Closed — won'),
+      h('span', null, h('span', { className: 'dot', style: { background: '#7ab648' } }), ' Won — expired'),
+      h('span', null, h('span', { className: 'dot', style: { background: '#a6d46f' } }), ' Won — bought back'),
       h('span', null, h('span', { className: 'dot', style: { background: '#d65c5c' } }), ' Closed — lost'),
       h('span', null, h('span', { className: 'dot', style: { background: '#ef9f27' } }), ' Open'),
       h('span', null, h('span', { style: { display: 'inline-block', width: 2, height: 10, background: '#185fa5' } }), ' Today')
@@ -396,11 +405,89 @@ function WheelCycles({ trades, prices, onUpdateTrade, onAddTrade }) {
       h('i', { className: 'ti ti-refresh', 'aria-hidden': true }),
       h('div', null, 'No wheel cycles yet'),
       h('div', { style: { fontSize: 12, marginTop: 6 } }, 'Log a naked put and mark it assigned to start a cycle')
+    )
+  );
+}
+
+// ── Timeline tab ────────────────────────────────────────────────
+// The Gantt (every position by ticker) plus a per-ticker scorecard so
+// you can see which companies you traded and how well they did. Active
+// tickers sort to the top of both; completed/assigned history sinks down.
+function Timeline({ trades, prices }) {
+  const rows = useMemoWC(() => {
+    const map = {};
+    trades.forEach(t => {
+      if (!t.ticker) return;
+      const s = map[t.ticker] || (map[t.ticker] =
+        { ticker: t.ticker, n: 0, closed: 0, wins: 0, realized: 0, prem: 0, open: 0, openCap: 0, assigned: 0 });
+      s.n++;
+      s.prem += (parseFloat(t.premiumReceived) || 0) * 100 * (parseInt(t.contracts) || 1);
+      const m = calcMetrics(t);
+      if (t.outcome === 'Open') {
+        s.open++;
+        s.openCap += deployedCapital(t);
+      } else if (t.outcome === 'Assigned') {
+        s.assigned++;
+      } else if (t.outcome && m.pnl != null) {
+        s.realized += m.pnl;
+        s.closed++;
+        if (['Expired Worthless','Bought Back','Closed Profit'].includes(t.outcome)) s.wins++;
+      }
+    });
+    // Active (open positions) first, then most profitable.
+    return Object.values(map).sort((a, b) =>
+      ((b.open > 0) - (a.open > 0)) || (b.realized - a.realized));
+  }, [trades, prices]);
+
+  if (!trades.length) return h('div', { className: 'empty' },
+    h('i', { className: 'ti ti-timeline', 'aria-hidden': true }),
+    h('div', null, 'No trades to display yet'),
+    h('div', { style: { fontSize: 12, marginTop: 6 } }, 'Log a trade to see it on the timeline')
+  );
+
+  const totN        = rows.reduce((s, r) => s + r.n, 0);
+  const totRealized = rows.reduce((s, r) => s + r.realized, 0);
+  const totPrem     = rows.reduce((s, r) => s + r.prem, 0);
+  const totOpenCap  = rows.reduce((s, r) => s + r.openCap, 0);
+
+  return h('div', null,
+    h('div', { className: 'card' },
+      h('div', { className: 'sec' }, 'Position timeline'),
+      h(GanttChart, { trades })
     ),
 
-    h('div', { style: { marginTop: 20 } },
-      h('div', { className: 'sec' }, 'Cycle timeline'),
-      h('div', { className: 'card' }, h(GanttChart, { trades }))
+    h('div', { className: 'card' },
+      h('div', { className: 'sec' }, 'By ticker — activity & success'),
+      h('div', { className: 'table-wrap' },
+        h('table', null,
+          h('thead', null, h('tr', null,
+            ['Ticker','Trades','Win rate','Realized P&L','Premium','Open (n · $)'].map(c => h('th', { key: c }, c))
+          )),
+          h('tbody', null,
+            rows.map(r => h('tr', { key: r.ticker },
+              h('td', null,
+                h('strong', null, r.ticker),
+                r.open > 0 && h('span', { className: 'badge badge-blue', style: { fontSize: 9, marginLeft: 6 } }, 'active')
+              ),
+              h('td', null, r.n),
+              h('td', null, r.closed ? fp(r.wins / r.closed) : '—'),
+              h('td', { className: r.realized >= 0 ? 'pos-green' : 'pos-red' }, (r.realized >= 0 ? '+' : '') + f$(r.realized)),
+              h('td', null, f$(r.prem)),
+              h('td', null, r.open ? r.open + ' · ' + f$(r.openCap) : '—')
+            )),
+            h('tr', { style: { borderTop: '2px solid #d8d8d8', fontWeight: 600 } },
+              h('td', null, 'Total'),
+              h('td', null, totN),
+              h('td', null, '—'),
+              h('td', { className: totRealized >= 0 ? 'pos-green' : 'pos-red' }, (totRealized >= 0 ? '+' : '') + f$(totRealized)),
+              h('td', null, f$(totPrem)),
+              h('td', null, totOpenCap ? f$(totOpenCap) : '—')
+            )
+          )
+        )
+      ),
+      h('div', { style: { fontSize: 11, color: '#777', marginTop: 8, lineHeight: 1.5 } },
+        'Win rate counts resolved trades with a P&L (assigned puts are excluded — they roll into a wheel, not a win or loss). Open shows how many positions are live and the collateral they tie up.')
     )
   );
 }
