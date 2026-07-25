@@ -47,7 +47,7 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
       const con    = parseInt(t.contracts) || 1;
       const prem   = parseFloat(t.premiumReceived) || 0;
       const exp    = fd(t.expiry);
-      const dLeft  = exp ? daysBetween(tod, exp) : null;
+      const dLeft  = t.expiry ? daysUntilDate(t.expiry, tod) : null;
       const isS    = t.strategy && t.strategy.includes('Spread');
 
       const dist   = price && s1 ? Math.abs(price - s1) / s1 : null;
