@@ -2,10 +2,6 @@
 const STRATS = ['Naked Put','Naked Call','Bull Put Spread','Bear Call Spread','Iron Condor','Covered Call'];
 const OUTCOMES = ['Open','Expired Worthless','Bought Back','Assigned','Closed Profit','Closed Loss','Max Loss'];
 
-// ── Benchmark: SGOV risk-free yield ────────────────────────────
-// Hardcoded. Edit to the current SGOV 30-day SEC yield when rates move.
-const SGOV_YIELD = 0.042; // 4.2% annualized
-
 // ── Formatters ─────────────────────────────────────────────────
 function f$(v, d = 0) {
   if (v == null || isNaN(v)) return '—';
@@ -23,6 +19,19 @@ function fd(s) {
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 function daysBetween(a, b) { return Math.round((b - a) / 86400000); }
 function today() { return new Date(); }
+
+// Whole-day difference that ignores time-of-day: normalizes both dates
+// to local midnight before differencing. Positive = b is in the future.
+// Used for DTE countdowns so "expiry tomorrow" reads 1, "expiry today" 0,
+// "expiry yesterday" -1 — regardless of the current clock time.
+function daysUntilDate(target, from) {
+  const t = fd(typeof target === 'string' ? target : null) || target;
+  if (!t) return null;
+  const f = from || new Date();
+  const a = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+  const b = new Date(f.getFullYear(), f.getMonth(), f.getDate());
+  return Math.round((a - b) / 86400000);
+}
 
 // ── Core metrics calculator ─────────────────────────────────────
 function calcMetrics(t) {
@@ -84,45 +93,6 @@ function calcMetrics(t) {
   const actAnn = pnl != null && held > 0 && cap > 0 ? (pnl / cap) * (365 / held) : null;
 
   return { cap, maxLoss, be, roc, annR, bec, pnl, actAnn, isSpread, isCoveredCall, isNakedCall };
-}
-
-// ── Yield-tracker helpers ───────────────────────────────────────
-// Capital actually tied up by a position (the honest denominator for
-// return-on-deployed-capital). Puts & spreads use calcMetrics.cap;
-// covered calls use the share value that's committed; naked calls are
-// excluded (risk is unbounded, no meaningful collateral figure).
-function deployedCapital(t) {
-  const con = parseInt(t.contracts) || 1;
-  const s1  = parseFloat(t.strike1) || 0;
-  const m   = calcMetrics(t);
-  if (m.isNakedCall) return 0;
-  if (m.isCoveredCall) return s1 * 100 * con;
-  return m.cap || 0;
-}
-
-// Risk tier for the "yield by risk" lens. Prefers entry delta (the
-// direct measure of assignment probability); falls back to break-even
-// cushion when delta wasn't recorded, so older trades still classify.
-function riskTier(t) {
-  let d = parseFloat(t.delta);
-  if (!isNaN(d) && d !== 0) {
-    d = Math.abs(d);
-    if (d > 1) d = d / 100; // handle delta entered as 15 rather than 0.15
-    return d < 0.15 ? 'Conservative' : d < 0.30 ? 'Moderate' : 'Aggressive';
-  }
-  const c = calcMetrics(t).bec;
-  if (c > 0) return c > 0.15 ? 'Conservative' : c > 0.07 ? 'Moderate' : 'Aggressive';
-  return 'Unclassified';
-}
-
-// The [open, end] date span a position tied up collateral.
-// end = date closed, else expiry, else today (still open).
-function tradeSpan(t) {
-  const open = fd(t.dateOpened);
-  if (!open) return null;
-  let end = fd(t.dateClosed) || fd(t.expiry) || today();
-  if (end < open) end = open;
-  return [open, end];
 }
 
 // ── Price fetch via Finnhub (fast, no proxy needed) ───────────
