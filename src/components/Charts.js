@@ -1,4 +1,54 @@
 function Charts({ trades, prices }) {
+  // ── Local helpers ────────────────────────────────────────────
+  // Defined inside this component so the Charts tab never depends on
+  // utils.js version or script load order. Function-scoped, so they
+  // cannot collide with any same-named global.
+
+  // Risk-free baseline used for the SGOV comparison line (annualized).
+  const SGOV_YIELD = 0.04;
+
+  // Collateral a position actually ties up.
+  //   naked put     -> strike x 100 x contracts
+  //   spread        -> (width - credit) x 100 x contracts  (calcMetrics cap)
+  //   covered call  -> share value tied up (strike x 100 x contracts)
+  //   naked call    -> 0 (risk undefined, excluded from yield math)
+  const deployedCapital = (t) => {
+    const m   = calcMetrics(t);
+    const s1  = parseFloat(t.strike1) || 0;
+    const con = parseInt(t.contracts) || 1;
+    if (m.isNakedCall) return 0;
+    if (m.isCoveredCall) return s1 * 100 * con;
+    return m.cap || 0;
+  };
+
+  // [start, end] Date pair for how long capital was committed.
+  // Open trades run to expiry; closed trades to their close date.
+  const tradeSpan = (t) => {
+    const start = fd(t.dateOpened);
+    if (!start) return null;
+    const end = fd(t.dateClosed || t.expiry);
+    if (!end || end < start) return null;
+    return [start, end];
+  };
+
+  // Risk bucket by entry delta; falls back to break-even cushion
+  // when delta was not recorded on the trade.
+  const riskTier = (t) => {
+    const d = Math.abs(parseFloat(t.delta) || 0);
+    if (d > 0) {
+      if (d <= 0.20) return 'Conservative';
+      if (d <= 0.35) return 'Moderate';
+      return 'Aggressive';
+    }
+    const bec = calcMetrics(t).bec;
+    if (bec > 0) {
+      if (bec >= 0.10) return 'Conservative';
+      if (bec >= 0.05) return 'Moderate';
+      return 'Aggressive';
+    }
+    return 'Unclassified';
+  };
+
   const lineRef  = useRefC(null);
   const barRef   = useRefC(null);
   const yieldRef = useRefC(null);
