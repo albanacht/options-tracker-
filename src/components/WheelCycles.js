@@ -1,9 +1,20 @@
+// Self-contained whole-day countdown (ignores time-of-day). Local to this
+// file so it never depends on utils.js load order or version.
+function __dtLeft(target, from) {
+  var t = (typeof target === 'string') ? fd(target) : target;
+  if (!t) return null;
+  var f = from || new Date();
+  var a = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+  var b = new Date(f.getFullYear(), f.getMonth(), f.getDate());
+  return Math.round((a - b) / 86400000);
+}
+
+// Segment color by strategy/outcome for the timeline.
 function legColor(t) {
   if (t.outcome === 'Assigned') return '#185fa5';
   if (t.strategy === 'Covered Call') return '#1d9e75';
   if (t.outcome === 'Open') return '#ef9f27';
-  if (t.outcome === 'Expired Worthless') return '#7ab648';                            // won — let it expire (base green)
-  if (t.outcome === 'Bought Back' || t.outcome === 'Closed Profit') return '#a6d46f';  // won — bought back / closed early (lighter green)
+  if (t.outcome === 'Expired Worthless' || t.outcome === 'Bought Back' || t.outcome === 'Closed Profit') return '#7ab648';
   if (t.outcome === 'Closed Loss' || t.outcome === 'Max Loss') return '#d65c5c';
   return '#9196b0';
 }
@@ -15,7 +26,6 @@ function legLabel(t) {
   if (t.putCall === 'C') return 'Call';
   return '';
 }
-
 function getMonday(d) {
   const date = new Date(d);
   const day = date.getDay();
@@ -316,7 +326,7 @@ function WheelCycles({ trades, prices, onUpdateTrade, onAddTrade }) {
       const endDate   = calledAway ? fd(calledAway.dateClosed || calledAway.expiry) : null;
       const totalDays = startDate && endDate
         ? daysBetween(startDate, endDate)
-        : startDate ? daysUntilDate(today(), startDate) : 0;
+        : startDate ? __dtLeft(today(), startDate) : 0;
 
       const cap = strike * 100 * con;
       const annRocar = completePnl != null && totalDays > 0
@@ -443,7 +453,7 @@ function Timeline({ trades, prices }) {
       const m = calcMetrics(t);
       if (t.outcome === 'Open') {
         s.open++;
-        s.openCap += deployedCapital(t);
+        s.openCap += (m.isCoveredCall || m.isNakedCall) ? 0 : (m.cap || 0);
       } else if (t.outcome === 'Assigned') {
         s.assigned++;
       } else if (t.outcome && m.pnl != null) {
