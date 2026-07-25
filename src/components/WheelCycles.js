@@ -278,7 +278,25 @@ function WheelCycles({ trades, prices, onUpdateTrade, onAddTrade }) {
         (x.dateOpened || '') >= openDate && x.outcome === 'Open'
       );
 
-      const ccIncome = ccs.reduce((s, c) => { const m = calcMetrics(c); return s + (m.pnl || 0); }, 0);
+      // CC income: a CC's contribution to the cycle is the premium kept.
+      // calcMetrics.pnl is null for an *assigned* CC (shares called away),
+      // but you still keep that premium — so compute it explicitly:
+      //   Expired Worthless / Assigned → full premium kept
+      //   Bought Back / Closed         → premium minus buyback cost
+      const ccIncome = ccs.reduce((s, c) => {
+        const cPrem = parseFloat(c.premiumReceived) || 0;
+        const cCon  = parseInt(c.contracts) || 1;
+        const cClose = parseFloat(c.closePrice) || 0;
+        let cPnl;
+        if (c.outcome === 'Expired Worthless' || c.outcome === 'Assigned') {
+          cPnl = cPrem * 100 * cCon;               // premium kept in full
+        } else if (c.outcome === 'Bought Back' || c.outcome === 'Closed Profit' || c.outcome === 'Closed Loss') {
+          cPnl = (cPrem - cClose) * 100 * cCon;    // premium minus cost to close
+        } else {
+          cPnl = 0;
+        }
+        return s + cPnl;
+      }, 0);
       const strike   = parseFloat(t.strike1) || 0;
       const prem     = parseFloat(t.premiumReceived) || 0;
       const con      = parseInt(t.contracts) || 1;
@@ -298,7 +316,7 @@ function WheelCycles({ trades, prices, onUpdateTrade, onAddTrade }) {
       const endDate   = calledAway ? fd(calledAway.dateClosed || calledAway.expiry) : null;
       const totalDays = startDate && endDate
         ? daysBetween(startDate, endDate)
-        : startDate ? daysBetween(startDate, today()) : 0;
+        : startDate ? daysUntilDate(today(), startDate) : 0;
 
       const cap = strike * 100 * con;
       const annRocar = completePnl != null && totalDays > 0
