@@ -95,6 +95,17 @@ function calcMetrics(t) {
   return { cap, maxLoss, be, roc, annR, bec, pnl, actAnn, isSpread, isCoveredCall, isNakedCall };
 }
 
+// ── Deployed capital for an open position ───────────────────────
+// The collateral a position actually ties up. Covered calls tie up $0
+// additional (shares already counted as deployed elsewhere); true naked
+// calls have no well-defined figure. Referenced by Charts and the
+// wheel timeline — defined here so every file shares one definition.
+function deployedCapital(t) {
+  const m = calcMetrics(t);
+  if (m.isCoveredCall || m.isNakedCall) return 0;
+  return m.cap || 0;
+}
+
 // ── Price fetch via Finnhub (fast, no proxy needed) ───────────
 const FINNHUB_KEY = 'd8nsp69r01qvvn9b07p0d8nsp69r01qvvn9b07pg';
 
