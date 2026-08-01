@@ -78,8 +78,13 @@ function calcMetrics(t) {
   const annR  = dte > 0 ? roc * (365 / dte) : 0;
   const bec   = und > 0 ? Math.abs(und - be) / und : 0;
 
+  // ── Realized P&L on the OPTION leg ───────────────────────────
+  // 'Assigned' used to return null, which silently zeroed the premium
+  // you actually kept (the NVO covered-call bug, and the reason monthly
+  // yield looked worse than reality). An assigned option's premium is
+  // kept in full; the share outcome is tracked by the wheel cycle.
   let pnl = null;
-  if (t.outcome === 'Expired Worthless') {
+  if (t.outcome === 'Expired Worthless' || t.outcome === 'Assigned') {
     pnl = prem * 100 * con;
   } else if (t.outcome === 'Bought Back' || t.outcome === 'Closed Profit' || t.outcome === 'Closed Loss') {
     pnl = (prem - close) * 100 * con;
@@ -87,23 +92,93 @@ function calcMetrics(t) {
     pnl = -maxLoss;
   }
 
+  // Outcome classification — used everywhere so win-rate math stays
+  // consistent. Assigned is neither a win nor a loss: it rolls into a
+  // wheel cycle, so it is excluded from win-rate denominators.
+  const isAssigned   = t.outcome === 'Assigned';
+  const isResolved   = !!t.outcome && t.outcome !== 'Open';
+  const isWin        = ['Expired Worthless','Bought Back','Closed Profit'].indexOf(t.outcome) >= 0;
+  const countsWinRate = isResolved && !isAssigned;
+
   const d1 = fd(t.dateOpened);
   const d2 = fd(t.dateClosed || t.expiry);
   const held = d1 && d2 ? daysBetween(d1, d2) : dte;
   const actAnn = pnl != null && held > 0 && cap > 0 ? (pnl / cap) * (365 / held) : null;
 
-  return { cap, maxLoss, be, roc, annR, bec, pnl, actAnn, isSpread, isCoveredCall, isNakedCall };
+  return { cap, maxLoss, be, roc, annR, bec, pnl, actAnn, isSpread, isCoveredCall, isNakedCall,
+           isAssigned, isResolved, isWin, countsWinRate, prem, con, dte };
 }
 
-// ── Deployed capital for an open position ───────────────────────
-// The collateral a position actually ties up. Covered calls tie up $0
-// additional (shares already counted as deployed elsewhere); true naked
-// calls have no well-defined figure. Referenced by Charts and the
-// wheel timeline — defined here so every file shares one definition.
+// ── Shared analytics helpers (single source of truth) ───────────
+// Every component imports these from here. Defining them locally in
+// components is what caused the legColor / tradeSpan / riskTier crashes.
+
+// Risk-free baseline for comparisons (annualised).
+const SGOV_YIELD = 0.04;
+
+// Collateral an OPTIONS position ties up. Covered calls add $0 (shares
+// already owned); naked calls have no defined figure so are excluded.
 function deployedCapital(t) {
   const m = calcMetrics(t);
   if (m.isCoveredCall || m.isNakedCall) return 0;
   return m.cap || 0;
+}
+
+// Capital tied up by ASSIGNED SHARES — tracked separately so a large
+// share position (e.g. CRM) does not swamp the options-yield maths.
+function shareCapital(t) {
+  if (t.outcome !== 'Assigned') return 0;
+  const s1 = parseFloat(t.strike1) || 0;
+  const con = parseInt(t.contracts) || 1;
+  return s1 * 100 * con;
+}
+
+// [start, end] Date pair for how long capital was committed.
+function tradeSpan(t) {
+  const start = fd(t.dateOpened);
+  if (!start) return null;
+  const end = fd(t.dateClosed || t.expiry);
+  if (!end || end < start) return null;
+  return [start, end];
+}
+
+// Risk bucket by entry delta; falls back to break-even cushion.
+function riskTier(t) {
+  const d = Math.abs(parseFloat(t.delta) || 0);
+  if (d > 0) {
+    if (d <= 0.20) return 'Conservative';
+    if (d <= 0.35) return 'Moderate';
+    return 'Aggressive';
+  }
+  const bec = calcMetrics(t).bec;
+  if (bec > 0) {
+    if (bec >= 0.10) return 'Conservative';
+    if (bec >= 0.05) return 'Moderate';
+    return 'Aggressive';
+  }
+  return 'Unclassified';
+}
+
+// Overlap in days between a trade's life and a calendar month.
+function daysInMonth(span, y, m) {
+  if (!span) return 0;
+  const mStart = new Date(y, m, 1);
+  const mEnd   = new Date(y, m + 1, 0);
+  const s = span[0] > mStart ? span[0] : mStart;
+  const e = span[1] < mEnd  ? span[1] : mEnd;
+  const d = daysBetween(s, e) + 1;
+  return d > 0 ? d : 0;
+}
+
+// Trailing-N-month axis (newest last), as 'YYYY-MM' strings.
+function monthAxis(n) {
+  const out = [];
+  const now = new Date();
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    out.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'));
+  }
+  return out;
 }
 
 // ── Price fetch via Finnhub (fast, no proxy needed) ───────────
@@ -133,8 +208,6 @@ async function fetchPrices(tickers) {
 const Store = {
   getTrades()    { try { return JSON.parse(localStorage.getItem('opt_trades_v3') || '[]'); } catch { return []; } },
   setTrades(t)   { try { localStorage.setItem('opt_trades_v3', JSON.stringify(t)); } catch {} },
-  getWatchlist() { try { return JSON.parse(localStorage.getItem('opt_watchlist')  || '[]'); } catch { return []; } },
-  setWatchlist(w){ try { localStorage.setItem('opt_watchlist',  JSON.stringify(w)); } catch {} },
 };
 
 // ── Distance bar color ──────────────────────────────────────────
@@ -153,7 +226,6 @@ const useRef    = React.useRef;
 // ── Aliased hooks to avoid re-declaration conflicts ────────────
 const useStateWC  = React.useState;
 const useMemoWC   = React.useMemo;
-const useStateWL  = React.useState;
 const useStateAM  = React.useState;
 const useStateWB  = React.useState;
 const useEffectC  = React.useEffect;
