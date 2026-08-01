@@ -1,26 +1,19 @@
 const TABS = [
-  { id: 'monitor',   label: 'Monitor',       icon: 'ti-eye' },
-  { id: 'logger',    label: 'Log trade',      icon: 'ti-plus' },
-  { id: 'wheel',     label: 'Wheel cycles',   icon: 'ti-refresh' },
-  { id: 'timeline',  label: 'Timeline',       icon: 'ti-timeline' },
-  { id: 'risk',      label: 'Capital at risk',icon: 'ti-shield' },
-  { id: 'charts',    label: 'Charts',         icon: 'ti-chart-bar' },
-  { id: 'watchlist', label: 'Watchlist',      icon: 'ti-list' },
-  { id: 'ev',        label: 'EV / Edge',      icon: 'ti-math-function' },
-  { id: 'scanner',   label: 'Scanner',        icon: 'ti-radar' },
+  { id: 'positions',   label: 'Positions',   icon: 'ti-eye' },
+  { id: 'history',     label: 'History',     icon: 'ti-plus' },
+  { id: 'wheel',       label: 'Wheel',       icon: 'ti-refresh' },
+  { id: 'performance', label: 'Performance', icon: 'ti-chart-bar' },
 ];
 
 function App() {
-  const [tab,       setTab]       = useState('monitor');
+  const [tab,       setTab]       = useState('positions');
   const [trades,    setTrades]    = useState(() => Store.getTrades());
   const [showForm,  setShowForm]  = useState(false);
   const [editTrade, setEditTrade] = useState(null);
   const [prices,    setPrices]    = useState({});
   const [loading,   setLoading]   = useState(false);
-  const [watchlist, setWatchlist] = useState(() => Store.getWatchlist());
 
   useEffect(() => Store.setTrades(trades),    [trades]);
-  useEffect(() => Store.setWatchlist(watchlist), [watchlist]);
 
   const saveTrade = t => {
     setTrades(p => {
@@ -39,12 +32,14 @@ function App() {
     saveTrade({ ...trade, outcome, dateClosed: trade.expiry });
   };
 
+  // Live prices are needed for open positions and for assigned shares
+  // (their market value drives unrealised P&L and the capital panel).
   const allTickers = useMemo(() =>
-    [...new Set([
-      ...trades.filter(t => t.outcome === 'Open').map(t => t.ticker),
-      ...watchlist
-    ])].filter(Boolean),
-    [trades, watchlist]
+    [...new Set(
+      trades.filter(t => t.outcome === 'Open' || t.outcome === 'Assigned')
+            .map(t => t.ticker)
+    )].filter(Boolean),
+    [trades]
   );
 
   const doFetchPrices = useCallback(async () => {
@@ -74,7 +69,7 @@ function App() {
   };
 
   const exportJson = () => {
-    const data = { exportedAt: new Date().toISOString(), tradeCount: trades.length, trades, watchlist };
+    const data = { exportedAt: new Date().toISOString(), tradeCount: trades.length, trades };
     downloadBlob(JSON.stringify(data, null, 2), 'options-tracker-' + todayStr() + '.json', 'application/json');
   };
 
@@ -100,7 +95,6 @@ function App() {
         if (!Array.isArray(imported)) throw new Error('No trades array found');
         if (!window.confirm('Import ' + imported.length + ' trades? This REPLACES your current ' + trades.length + ' trades. Export a backup first if unsure.')) return;
         setTrades(imported);
-        if (data.watchlist && Array.isArray(data.watchlist)) setWatchlist(data.watchlist);
       } catch (err) {
         window.alert('Could not read that file: ' + err.message);
       }
@@ -140,9 +134,9 @@ function App() {
       ))
     ),
 
-    tab === 'monitor' && h(ActiveMonitor, { trades, prices, loadingPrices: loading, refreshPrices: doFetchPrices, onUpdateTrade: saveTrade }),
+    tab === 'positions' && h(ActiveMonitor, { trades, prices, loadingPrices: loading, refreshPrices: doFetchPrices, onUpdateTrade: saveTrade }),
 
-    tab === 'logger' && h('div', null,
+    tab === 'history' && h('div', null,
       !showForm && !editTrade && h('div', null,
         h('button', { className: 'btn btn-primary', style: { marginBottom: 14 }, onClick: () => setShowForm(true) },
           h('i', { className: 'ti ti-plus', 'aria-hidden': true }), ' Log new trade'
@@ -186,13 +180,8 @@ function App() {
       })
     ),
 
-    tab === 'wheel'     && h(WheelCycles,   { trades, prices, onUpdateTrade: saveTrade, onAddTrade: addTrade }),
-    tab === 'timeline'  && h(Timeline,       { trades, prices }),
-    tab === 'risk'      && h(CapitalRisk,    { trades, prices }),
-    tab === 'charts'    && h(Charts,         { trades, prices }),
-    tab === 'watchlist' && h(Watchlist,      { watchlist, setWatchlist, prices, loadingPrices: loading, refresh: doFetchPrices }),
-    tab === 'ev'        && h(EVCalculator,   { trades }),
-    tab === 'scanner'   && h(Scanner, { onPick: draft => { setEditTrade(draft); setShowForm(false); setTab('logger'); } })
+    tab === 'wheel'       && h(WheelCycles, { trades, prices, onUpdateTrade: saveTrade, onAddTrade: addTrade }),
+    tab === 'performance' && h(Charts,      { trades, prices })
   );
 }
 
