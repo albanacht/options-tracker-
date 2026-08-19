@@ -274,19 +274,44 @@ function WheelCycles({ trades, prices, onUpdateTrade, onAddTrade }) {
   const toggle = id => setExpanded(p => ({ ...p, [id]: !p[id] }));
 
   const cycles = useMemoWC(() => {
-    const assigned = trades.filter(t => t.outcome === 'Assigned');
-    return assigned.map(t => {
-      const ticker = t.ticker;
-      const openDate = t.dateOpened || '';
+    // ── Which trades START a cycle ─────────────────────────────
+    // Only an assigned PUT starts a wheel cycle: shares are bought.
+    // An assigned COVERED CALL *ends* one (shares are sold), and must
+    // never be read as the start of a new lot — doing so created a
+    // phantom cycle that also counted its own premium as CC income.
+    const lots = trades
+      .filter(t => t.outcome === 'Assigned' && t.putCall !== 'C' && t.strategy !== 'Covered Call')
+      .sort((a, b) => (a.dateOpened || '').localeCompare(b.dateOpened || ''));
 
-      const ccs = trades.filter(x =>
-        x.strategy === 'Covered Call' && x.ticker === ticker &&
-        (x.dateOpened || '') >= openDate && x.outcome !== 'Open'
-      );
-      const openCcs = trades.filter(x =>
-        x.strategy === 'Covered Call' && x.ticker === ticker &&
-        (x.dateOpened || '') >= openDate && x.outcome === 'Open'
-      );
+    // ── FIFO allocation of covered calls to lots ───────────────
+    // With two lots on one ticker, every CC used to be counted against
+    // BOTH, inflating income. Each CC is now claimed by the oldest lot
+    // that was open when the CC was written; once a lot's shares are
+    // called away it stops claiming further calls.
+    const claimed = {};                    // lot id -> array of CCs
+    lots.forEach(l => { claimed[l.id] = []; });
+    const closedLot = {};                  // lot id -> true once called away
+
+    trades
+      .filter(x => x.strategy === 'Covered Call' && x.ticker)
+      .sort((a, b) => (a.dateOpened || '').localeCompare(b.dateOpened || ''))
+      .forEach(cc => {
+        const cand = lots.filter(l =>
+          l.ticker === cc.ticker &&
+          (cc.dateOpened || '') >= (l.dateOpened || '') &&
+          !closedLot[l.id]
+        );
+        if (!cand.length) return;
+        const lot = cand[0];               // oldest still-open lot
+        claimed[lot.id].push(cc);
+        if (cc.outcome === 'Assigned') closedLot[lot.id] = true;
+      });
+
+    return lots.map(t => {
+      const ticker = t.ticker;
+      const mine = claimed[t.id] || [];
+      const ccs     = mine.filter(x => x.outcome !== 'Open');
+      const openCcs = mine.filter(x => x.outcome === 'Open');
 
       // CC income: a CC's contribution to the cycle is the premium kept.
       // calcMetrics.pnl is null for an *assigned* CC (shares called away),
@@ -312,10 +337,15 @@ function WheelCycles({ trades, prices, onUpdateTrade, onAddTrade }) {
       const con      = parseInt(t.contracts) || 1;
       const costBasis = strike - prem;
       const price     = prices[ticker];
-      const unrealized = price != null ? (price - strike) * 100 * con : null;
+      const calledAwayCc = ccs.filter(x => x.outcome === 'Assigned')[0] || null;
+      // Once the shares are called away there is no position left to
+      // mark to market — showing an "unrealised" figure on a closed
+      // cycle overstated it badly.
+      const unrealized = (!calledAwayCc && price != null)
+        ? (price - strike) * 100 * con : null;
       const putPnl    = prem * 100 * con;
 
-      const calledAway = ccs.find(c => c.outcome === 'Assigned');
+      const calledAway = calledAwayCc;
       const isComplete = !!calledAway;
       const salePrice  = calledAway ? parseFloat(calledAway.strike1) || 0 : 0;
       const completePnl = isComplete
