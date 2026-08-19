@@ -1,476 +1,243 @@
-// Self-contained whole-day countdown (ignores time-of-day). Local to this
-// file so it never depends on utils.js load order or version.
-function __dtLeft(target, from) {
-  var t = (typeof target === 'string') ? fd(target) : target;
-  if (!t) return null;
-  var f = from || new Date();
-  var a = new Date(t.getFullYear(), t.getMonth(), t.getDate());
-  var b = new Date(f.getFullYear(), f.getMonth(), f.getDate());
-  return Math.round((a - b) / 86400000);
+// ── Black-Scholes helpers (restored) ────────────────────────────
+// Uses the IV stored per trade at entry (TradeForm "IV % at entry").
+function normCDF(x) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(x));
+  const d = 0.3989423 * Math.exp(-x * x / 2);
+  let p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  return x > 0 ? 1 - p : p;
 }
-
-// Segment color by strategy/outcome for the timeline.
-function legColor(t) {
-  if (t.outcome === 'Assigned') return '#185fa5';
-  if (t.strategy === 'Covered Call') return '#1d9e75';
-  if (t.outcome === 'Open') return '#ef9f27';
-  if (t.outcome === 'Expired Worthless' || t.outcome === 'Bought Back' || t.outcome === 'Closed Profit') return '#7ab648';
-  if (t.outcome === 'Closed Loss' || t.outcome === 'Max Loss') return '#d65c5c';
-  return '#9196b0';
+function bsPrice(S, K, T, sigma, isPut) {
+  if (!S || !K || !sigma || sigma <= 0 || T <= 0) return null;
+  const r = 0.04;
+  const sq = sigma * Math.sqrt(T);
+  const d1 = (Math.log(S / K) + (r + sigma * sigma / 2) * T) / sq;
+  const d2 = d1 - sq;
+  if (isPut) return K * Math.exp(-r * T) * normCDF(-d2) - S * normCDF(-d1);
+  return S * normCDF(d1) - K * Math.exp(-r * T) * normCDF(d2);
 }
-function legLabel(t) {
-  if (t.outcome === 'Assigned') return 'Put';
-  if (t.strategy === 'Covered Call') return 'CC';
-  if (t.strategy && t.strategy.includes('Spread')) return 'Spr';
-  if (t.putCall === 'P') return 'Put';
-  if (t.putCall === 'C') return 'Call';
-  return '';
-}
-function getMonday(d) {
-  const date = new Date(d);
-  const day = date.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  date.setDate(date.getDate() + diff);
-  date.setHours(0, 0, 0, 0);
-  return date;
-}
-
-function GanttChart({ trades }) {
-  const relevant = trades.filter(t => t.dateOpened && t.ticker);
-
-  // Active tickers (something still open) float to the top, then by most
-  // recent activity — keeps what's live from getting buried under history.
-  const hasOpen = tk => trades.some(t => t.ticker === tk && t.outcome === 'Open');
-  const lastAct = tk => trades.filter(t => t.ticker === tk && t.dateOpened)
-    .reduce((mx, t) => t.dateOpened > mx ? t.dateOpened : mx, '');
-  const tickers = [...new Set(relevant.map(t => t.ticker))].filter(Boolean)
-    .sort((a, b) => (hasOpen(b) - hasOpen(a)) || lastAct(b).localeCompare(lastAct(a)));
-
-  if (!tickers.length) return h('div', { style: { fontSize: 11, color: 'var(--text2)' } }, 'No trades to display yet.');
-
-  const now = today();
-  const windowStart = getMonday(new Date(now.getFullYear(), now.getMonth() - 1, now.getDate()));
-  const windowEnd   = new Date(now.getFullYear(), now.getMonth() + 2, now.getDate());
-
-  const allDates = relevant.flatMap(t => [fd(t.dateOpened), fd(t.dateClosed || t.expiry)]).filter(Boolean);
-  const minD = new Date(Math.min(windowStart.getTime(), ...allDates.map(d => d.getTime())));
-  const maxD = new Date(Math.max(windowEnd.getTime(), ...allDates.map(d => d.getTime())));
-
-  const totalMs = maxD - minD || 1;
-  const pct = d => d ? Math.max(0, Math.min(100, (d - minD) / totalMs * 100)) : 0;
-
-  const weeks = [];
-  let cursor = getMonday(minD);
-  while (cursor <= maxD) {
-    weeks.push(new Date(cursor));
-    cursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + 7);
-  }
-
-  const months = [];
-  let mCursor = new Date(minD.getFullYear(), minD.getMonth(), 1);
-  while (mCursor <= maxD) {
-    months.push(new Date(mCursor));
-    mCursor = new Date(mCursor.getFullYear(), mCursor.getMonth() + 1, 1);
-  }
-
-  const todayPct = pct(now);
-
-  return h('div', { className: 'gantt-container' },
-
-    h('div', { className: 'gantt-month-row' },
-      h('div', { className: 'gantt-label' }, ''),
-      h('div', { className: 'gantt-month-track' },
-        months.map((m, i) => {
-          const left = pct(m);
-          const nextM = months[i + 1] || maxD;
-          const width = pct(nextM) - left;
-          return h('div', {
-            key: i,
-            className: 'gantt-month-label',
-            style: { left: left + '%', width: Math.max(width, 4) + '%' }
-          }, m.toLocaleDateString('en-US', { month: 'short', year: '2-digit' }));
-        })
-      )
+ 
+function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateTrade }) {
+  const [closing, setClosing] = useStateAM(null);
+  const open = trades.filter(t => t.outcome === 'Open').slice().reverse();
+  const tod  = today();
+ 
+  if (!open.length) return h('div', { className: 'empty' },
+    h('i', { className: 'ti ti-eye', 'aria-hidden': true }),
+    h('div', null, 'No open positions'),
+    h('div', { style: { fontSize: 12, marginTop: 6 } }, 'Log a trade to start tracking')
+  );
+ 
+  return h('div', null,
+    h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 } },
+      h('span', { className: 'sec' }, open.length + ' open position' + (open.length !== 1 ? 's' : '')),
+      h('button', { className: 'btn btn-sm', onClick: refreshPrices, disabled: loadingPrices },
+        loadingPrices ? 'Refreshing…' : '↻ Refresh prices')
     ),
-
-    tickers.map(ticker => {
-      const legs = trades
-        .filter(t => t.ticker === ticker && t.dateOpened)
-        .sort((a, b) => a.dateOpened.localeCompare(b.dateOpened));
-
-      // ── Lane packing ──────────────────────────────────────
-      // Two overlapping positions of the SAME type (put+put or
-      // call+call) go on separate lanes so they don't stack on
-      // top of each other (e.g. two CRM lots assigned at
-      // different strikes). A put and a call overlapping (a
-      // volatility-harvest pair) share one lane and stay compact.
-      const laneOf = l => {
-        const s = fd(l.dateOpened);
-        const e = fd(l.dateClosed || l.expiry) || now;
-        return { s, e };
-      };
-      const lanes = [];
-      legs.forEach(l => {
-        const { s, e } = laneOf(l);
-        if (!s) return;
-        let placed = false;
-        for (const lane of lanes) {
-          const conflict = lane.some(x => {
-            const xr = laneOf(x);
-            const overlaps = s <= xr.e && xr.s <= e;
-            const sameKind = (x.putCall || '') === (l.putCall || '');
-            return overlaps && sameKind;
-          });
-          if (!conflict) { lane.push(l); placed = true; break; }
+ 
+    closing && h(CloseModal, {
+      trade: closing,
+      onClose: () => setClosing(null),
+      onSave: t => { onUpdateTrade(t); setClosing(null); }
+    }),
+ 
+    open.map(t => {
+      const m      = calcMetrics(t);
+      const price  = prices[t.ticker];
+      const s1     = parseFloat(t.strike1);
+      const con    = parseInt(t.contracts) || 1;
+      const prem   = parseFloat(t.premiumReceived) || 0;
+      const exp    = fd(t.expiry);
+      const dLeft  = t.expiry ? daysUntilDate(t.expiry, tod) : null;
+      const isS    = t.strategy && t.strategy.includes('Spread');
+ 
+      const dist   = price && s1 ? Math.abs(price - s1) / s1 : null;
+      const isItm  = price && s1 && (t.putCall === 'P' ? price < s1 : price > s1);
+ 
+      // ── Black-Scholes estimated option price + theta ─────────
+      // Uses stored entry IV when available; otherwise assumes a
+      // conservative 25% (roughly S&P average) and flags it visually.
+      // For spreads, estOpt is the NET value (short leg − long leg) so
+      // the number is comparable to the credit received, not a single
+      // naked leg worth many times more.
+      const s2 = parseFloat(t.strike2) || 0;
+      const storedIv = parseFloat(t.iv) || null;
+      const ivAssumed = !storedIv;
+      const iv = storedIv || 0.25;
+      const T  = dLeft != null && dLeft > 0 ? dLeft / 365 : null;
+      const isPutLeg = t.putCall === 'P';
+ 
+      const legVal = (K, tt) => bsPrice(price, K, tt, iv, isPutLeg);
+      const netVal = (tt) => (isS && s2)
+        ? legVal(s1, tt) - legVal(s2, tt)
+        : legVal(s1, tt);
+ 
+      const estOpt = (price && T) ? netVal(T) : null;
+      const pctOfPrem = (estOpt != null && prem > 0) ? estOpt / prem : null;
+      const thetaDay = (estOpt != null && T > 1 / 365)
+        ? (estOpt - netVal(T - 1 / 365)) * 100 * con
+        : null;
+ 
+      // Live P&L: net BS estimate when priceable, intrinsic otherwise
+      let livePnl = null;
+      if (price && prem) {
+        let optVal;
+        if (estOpt != null) {
+          optVal = estOpt;
+        } else if (isS && s2) {
+          const shortIntr = isPutLeg ? Math.max(0, s1 - price) : Math.max(0, price - s1);
+          const longIntr  = isPutLeg ? Math.max(0, s2 - price) : Math.max(0, price - s2);
+          optVal = shortIntr - longIntr;
+        } else {
+          optVal = isPutLeg ? Math.max(0, s1 - price) : Math.max(0, price - s1);
         }
-        if (!placed) lanes.push([l]);
-      });
-
-      return h('div', { key: ticker },
-        lanes.map((lane, li) =>
-          h('div', { key: li, className: 'gantt-row' },
-            h('div', { className: 'gantt-label', title: ticker }, li === 0 ? ticker : ''),
-            h('div', { className: 'gantt-track' },
-
-              weeks.map((w, i) => h('div', {
-                key: 'w' + i,
-                className: 'gantt-week-line',
-                style: { left: pct(w) + '%' }
-              })),
-
-              h('div', { className: 'gantt-today-line', style: { left: todayPct + '%' } }),
-
-              lane.map((l, i) => {
-                const start = fd(l.dateOpened);
-                const end   = fd(l.dateClosed || l.expiry) || now;
-                if (!start) return null;
-                const left  = pct(start);
-                const width = Math.max(0.6, pct(end) - left);
-                const col   = legColor(l);
-                const label = legLabel(l);
-                const m = calcMetrics(l);
-                const tip = l.ticker + ' ' + (l.strategy || '') + ' · opened ' + l.dateOpened
-                  + ' · strike ' + (l.strike1 || '—')
-                  + (m.pnl != null ? ' → ' + f$(m.pnl) : ' (open, exp ' + (l.expiry || '—') + ')');
-
-                return h('div', {
-                  key: i, className: 'gantt-seg',
-                  title: tip,
-                  style: {
-                    left: left + '%', width: width + '%',
-                    background: col + '30', borderLeft: '2px solid ' + col
-                  }
-                },
-                  width > 5 && h('span', { style: { color: col } }, label + (l.strike1 ? ' ' + l.strike1 : ''))
-                );
-              })
-            )
+        livePnl = (prem - optVal) * 100 * con;
+      }
+      const captured = (livePnl != null && prem > 0) ? livePnl / (prem * 100 * con) : null;
+ 
+      // ── Spread doubled-loss alert ─────────────────────────────
+      // Rule: close a spread in loss once its value ≈ 2× the credit
+      // received (down ~1× credit). estOpt is the live net value.
+      const spreadLossMult = (isS && estOpt != null && prem > 0) ? estOpt / prem : null;
+      const spreadAlert = spreadLossMult != null && spreadLossMult >= 2;
+ 
+      // ── Covered-call yield (ROCAR is 0 by design — no collateral) ──
+      // Meaningful CC metric = premium ÷ shares' notional value.
+      const ccYield = (m.isCoveredCall && s1 > 0)
+        ? (prem * 100 * con) / (s1 * 100 * con)
+        : null;
+      const ccYieldAnn = (ccYield != null && (parseInt(t.dte) || 0) > 0)
+        ? ccYield * (365 / parseInt(t.dte))
+        : null;
+ 
+      // ── Border semantics: green = deep OTM / buyback candidate,
+      //    amber = normal, red = ITM ────────────────────────────
+      let alertCls = 'pos-card card alert-amber';
+      if (isItm || spreadAlert) alertCls = 'pos-card card alert-red';
+      else if ((dist != null && dist >= 0.10) || (captured != null && captured >= 0.7))
+        alertCls = 'pos-card card alert-green';
+ 
+      const priceCol = !price ? 'var(--text2)'
+        : isItm ? '#a32d2d'
+        : dist < 0.05 ? '#854f0b'
+        : '#27500a';
+ 
+      const prem100 = prem * 100;
+ 
+      return h('div', { key: t.id, className: alertCls, style: { padding: '10px 16px', marginBottom: 8 } },
+ 
+        // ── Row 1: ticker + badges ────────────────────────────
+        h('div', { className: 'pos-header', style: { marginBottom: 6 } },
+          h('div', { className: 'pos-title' },
+            h('span', { className: 'ticker', style: { fontSize: 16, fontWeight: 600 } }, t.ticker),
+            h('span', { className: 'badge badge-gray' }, t.strategy),
+            h('span', { className: 'badge badge-blue' }, t.putCall === 'P' ? 'Put' : 'Call')
+          ),
+          h('div', { className: 'pos-badges' },
+            dLeft != null && h('span', {
+              className: 'badge ' + (dLeft <= 5 ? 'badge-red' : dLeft <= 14 ? 'badge-amber' : 'badge-green')
+            }, dLeft + 'd left'),
+            t.expiry && h('span', { className: 'badge badge-gray' }, t.expiry),
+            livePnl != null && h('span', {
+              className: 'badge ' + (livePnl >= 0 ? 'badge-green' : 'badge-red')
+            }, (livePnl >= 0 ? '+' : '') + f$(livePnl)),
+            spreadAlert && h('span', { className: 'badge badge-red', title: 'Spread value ≈ ' + spreadLossMult.toFixed(1) + '× your credit — your rule says close in loss here' },
+              '⚠ close: ' + spreadLossMult.toFixed(1) + '× credit'),
+            m.isCoveredCall
+              ? (ccYieldAnn != null && h('span', { className: 'rocp', title: 'Premium ÷ shares value, annualized' }, fp(ccYieldAnn) + ' yield'))
+              : h('span', { className: 'rocp' }, fp(m.annR) + ' ann.')
           )
+        ),
+ 
+        // ── Row 2: compact strike | distance | price | est option ──
+        h('div', {
+          style: {
+            display: 'grid',
+            gridTemplateColumns: 'auto auto auto auto 1fr',
+            alignItems: 'center',
+            gap: 20,
+            background: 'var(--bg2)',
+            borderRadius: 8,
+            padding: '8px 14px',
+            marginBottom: 8
+          }
+        },
+          h('div', null,
+            h('div', { style: { fontSize: 10, color: 'var(--text2)' } }, 'STRIKE'),
+            h('div', { style: { fontSize: 20, fontWeight: 700 } },
+              f$(s1, 2) + (t.strike2 ? ' / ' + f$(parseFloat(t.strike2), 2) : ''))
+          ),
+          h('div', { style: { textAlign: 'center' } },
+            price
+              ? h('span', {
+                  style: {
+                    fontSize: 12, fontWeight: 600, color: priceCol,
+                    background: isItm ? '#fcebeb' : dist < 0.05 ? '#faeeda' : '#eaf3de',
+                    padding: '3px 9px', borderRadius: 20, whiteSpace: 'nowrap'
+                  }
+                }, isItm ? '⚠ ITM' : (dist * 100).toFixed(1) + '% away')
+              : h('span', { style: { fontSize: 11, color: 'var(--text3)' } }, '—')
+          ),
+          h('div', null,
+            h('div', { style: { fontSize: 10, color: 'var(--text2)' } }, 'PRICE'),
+            price
+              ? h('div', { style: { fontSize: 20, fontWeight: 700, color: priceCol } }, f$(price, 2))
+              : h('div', { style: { fontSize: 13, color: 'var(--text3)' } }, 'Loading…'),
+            h('div', { style: { fontSize: 9, color: 'var(--text3)' } }, 'via Finnhub')
+          ),
+          h('div', null,
+            h('div', { style: { fontSize: 10, color: 'var(--text2)' } }, 'EST. OPTION'),
+            estOpt != null
+              ? h('div', {
+                  style: { fontSize: 20, fontWeight: 700, color: ivAssumed ? '#854f0b' : '#185fa5' },
+                  title: ivAssumed ? 'Rough estimate — no IV stored for this trade, assuming 25%. Edit the trade and add "IV % at entry" for an accurate figure.' : 'Black-Scholes estimate using the IV you stored at entry'
+                }, (ivAssumed ? '~' : '') + f$(estOpt, 2))
+              : h('div', { style: { fontSize: 13, color: 'var(--text3)' } }, '—'),
+            estOpt != null && h('div', { style: { fontSize: 9, color: ivAssumed ? '#854f0b' : 'var(--text3)' } },
+              ivAssumed ? 'assumed IV 25%' : (pctOfPrem != null ? fp(pctOfPrem, 0) + ' of prem' : ''))
+          ),
+          h('div', { style: { minWidth: 140 } }, h(DistBar, { t, price }))
+        ),
+ 
+        // ── Row 3: stats strip ────────────────────────────────
+        h('div', { className: 'pos-stats', style: { marginBottom: 6 } },
+          h('div', null, h('span', { className: 'pos-stat-label' }, 'Premium '), h('strong', null, f$(prem100))),
+          h('div', null, h('span', { className: 'pos-stat-label' }, 'Break-even '), h('strong', null, f$(m.be, 2))),
+          h('div', null, h('span', { className: 'pos-stat-label' }, 'At risk '),
+            h('strong', null, m.isCoveredCall ? '$0 (shares owned)' : m.isNakedCall ? 'Unbounded' : f$(m.cap))),
+          h('div', null, h('span', { className: 'pos-stat-label' }, 'BE cushion '),
+            h('strong', { style: { color: m.bec > 0.1 ? '#27500a' : m.bec > 0.05 ? '#854f0b' : '#a32d2d' } },
+              m.bec > 0 ? fp(m.bec) : '—')),
+          thetaDay != null && h('div', null,
+            h('span', { className: 'pos-stat-label' }, 'Θ est./day '),
+            h('strong', { style: { color: ivAssumed ? '#854f0b' : '#3b6d11' } },
+              (ivAssumed ? '~+' : '+') + f$(thetaDay, 2))),
+          m.isCoveredCall && ccYieldAnn != null && h('div', null,
+            h('span', { className: 'pos-stat-label' }, 'CC yield '),
+            h('strong', { style: { color: '#185fa5' } }, fp(ccYieldAnn) + ' ann.'),
+            h('span', { style: { color: 'var(--text2)', fontSize: 10 } }, ' (' + fp(ccYield) + ' period)')),
+          isS && estOpt != null && h('div', null,
+            h('span', { className: 'pos-stat-label' }, 'Spread now '),
+            h('strong', { style: { color: spreadAlert ? '#a32d2d' : 'var(--text)' } },
+              (ivAssumed ? '~' : '') + f$(estOpt * 100 * con)),
+            h('span', { style: { color: 'var(--text2)', fontSize: 10 } }, ' vs ' + f$(prem100 * con) + ' credit')),
+          h('div', null,
+            h('span', { className: 'pos-stat-label' }, '50% '),
+            h('strong', null, f$(prem100 * 0.5)),
+            h('span', { style: { color: 'var(--text2)', fontSize: 10 } }, ' @ ' + f$(prem * 0.5, 2))),
+          h('div', null,
+            h('span', { className: 'pos-stat-label' }, '80% '),
+            h('strong', null, f$(prem100 * 0.8)),
+            h('span', { style: { color: 'var(--text2)', fontSize: 10 } }, ' @ ' + f$(prem * 0.2, 2)))
+        ),
+ 
+        t.notes && h('div', { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 6, fontStyle: 'italic' } }, t.notes),
+ 
+        h('div', { style: { display: 'flex', gap: 6 } },
+          h('button', { className: 'btn btn-sm', onClick: () => setClosing(t) },
+            isS ? 'Close spread' : 'Buy back / close')
         )
       );
-    }),
-
-    h('div', { className: 'gantt-row' },
-      h('div', { className: 'gantt-label' }, ''),
-      h('div', { className: 'gantt-week-axis' },
-        weeks.filter((_, i) => i % 2 === 0).map((w, i) => h('span', {
-          key: i,
-          style: { left: pct(w) + '%' }
-        }, w.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })))
-      )
-    ),
-
-    h('div', { className: 'gantt-legend' },
-      h('span', null, h('span', { className: 'dot', style: { background: '#185fa5' } }), ' Put / assigned'),
-      h('span', null, h('span', { className: 'dot', style: { background: '#1d9e75' } }), ' Covered call'),
-      h('span', null, h('span', { className: 'dot', style: { background: '#7ab648' } }), ' Won — expired'),
-      h('span', null, h('span', { className: 'dot', style: { background: '#a6d46f' } }), ' Won — bought back'),
-      h('span', null, h('span', { className: 'dot', style: { background: '#d65c5c' } }), ' Closed — lost'),
-      h('span', null, h('span', { className: 'dot', style: { background: '#ef9f27' } }), ' Open'),
-      h('span', null, h('span', { style: { display: 'inline-block', width: 2, height: 10, background: '#185fa5' } }), ' Today')
-    )
+    })
   );
 }
-
-
-function CCForm({ ticker, onSave, onCancel }) {
-  const [t, setT] = useStateWC({
-    dateOpened: todayStr(), ticker, strategy: 'Covered Call', putCall: 'C',
-    strike1: '', expiry: '', dte: '30', contracts: '1',
-    underlyingAtEntry: '', ivhv: '', iv: '', delta: '', premiumReceived: '',
-    outcome: 'Open', dateClosed: '', notes: ''
-  });
-  const up = (k, v) => setT(p => ({ ...p, [k]: v }));
-
-  // Auto-calculate DTE from dates, unless the user types directly into the field
-  const [dteOverridden, setDteOverridden] = useStateWC(false);
-  useEffectC(() => {
-    if (dteOverridden) return;
-    const d1 = fd(t.dateOpened);
-    const d2 = fd(t.expiry);
-    if (d1 && d2) {
-      const calculated = daysBetween(d1, d2);
-      if (calculated > 0 && String(calculated) !== t.dte) {
-        setT(p => ({ ...p, dte: String(calculated) }));
-      }
-    }
-  }, [t.dateOpened, t.expiry]);
-
-  const m = useMemoWC(() => calcMetrics(t), [t]);
-
-  return h('div', null,
-    h('div', { className: 'form-grid' },
-      h('div', { className: 'field' }, h('label', null, 'Date'), h('input', { type: 'date', value: t.dateOpened, onChange: e => up('dateOpened', e.target.value) })),
-      h('div', { className: 'field' }, h('label', null, 'Strike (call)'), h('input', { type: 'number', step: '0.5', value: t.strike1, onChange: e => up('strike1', e.target.value) })),
-      h('div', { className: 'field' }, h('label', null, 'Expiry'), h('input', { type: 'date', value: t.expiry, onChange: e => up('expiry', e.target.value) })),
-      h('div', { className: 'field' },
-        h('label', null, 'DTE ' + (dteOverridden ? '(manual)' : '(auto)')),
-        h('input', {
-          type: 'number', value: t.dte || '',
-          onChange: e => { setDteOverridden(true); up('dte', e.target.value); },
-          style: dteOverridden ? { borderColor: 'var(--blue)' } : {}
-        })
-      ),
-      h('div', { className: 'field' }, h('label', null, 'Contracts'), h('input', { type: 'number', value: t.contracts, onChange: e => up('contracts', e.target.value) })),
-      h('div', { className: 'field' }, h('label', null, 'Underlying at entry'), h('input', { type: 'number', step: '0.01', value: t.underlyingAtEntry, onChange: e => up('underlyingAtEntry', e.target.value) })),
-      h('div', { className: 'field' }, h('label', null, 'IV/HV ratio'), h('input', { type: 'number', step: '0.01', placeholder: '1.5', value: t.ivhv, onChange: e => up('ivhv', e.target.value) })),
-      h('div', { className: 'field' }, h('label', null, 'IV % at entry'), h('input', { type: 'number', step: '0.01', placeholder: '0.35', value: t.iv, onChange: e => up('iv', e.target.value) })),
-      h('div', { className: 'field' }, h('label', null, 'Delta'), h('input', { type: 'number', step: '0.01', placeholder: '0.20', value: t.delta, onChange: e => up('delta', e.target.value) })),
-      h('div', { className: 'field' }, h('label', null, 'Premium ($)'), h('input', { type: 'number', step: '0.01', value: t.premiumReceived, onChange: e => up('premiumReceived', e.target.value) })),
-      h('div', { className: 'field' },
-        h('label', null, 'Outcome'),
-        h('select', { value: t.outcome, onChange: e => up('outcome', e.target.value) },
-          ['Open', 'Expired Worthless', 'Assigned'].map(o => h('option', { key: o, value: o }, o))
-        )
-      ),
-      t.outcome !== 'Open' && h('div', { className: 'field' }, h('label', null, 'Date closed'), h('input', { type: 'date', value: t.dateClosed || '', onChange: e => up('dateClosed', e.target.value) }))
-    ),
-
-    (t.strike1 || t.premiumReceived) && h('div', { className: 'calc-preview' },
-      h('div', { className: 'calc-item' }, h('div', { className: 'calc-label' }, 'Capital at risk'), h('div', { className: 'calc-val' }, f$(m.cap))),
-      h('div', { className: 'calc-item' }, h('div', { className: 'calc-label' }, 'Break-even (call)'), h('div', { className: 'calc-val' }, f$(m.be, 2))),
-      h('div', { className: 'calc-item' }, h('div', { className: 'calc-label' }, 'BE cushion'),
-        h('div', { className: 'calc-val', style: { color: m.bec > 0.1 ? '#3b6d11' : m.bec > 0.05 ? '#854f0b' : '#a32d2d' } }, m.bec > 0 ? fp(m.bec) : '—')),
-      h('div', { className: 'calc-item' }, h('div', { className: 'calc-label' }, 'Ann. ROCAR'),
-        h('div', { className: 'calc-val', style: { color: '#185fa5' } },
-          (!t.premiumReceived || parseFloat(t.premiumReceived) === 0) ? '— add premium' : fp(m.annR)))
-    ),
-
-    h('div', { className: 'field full', style: { marginTop: 4, marginBottom: 10 } },
-      h('label', null, 'Notes'),
-      h('textarea', { rows: 2, value: t.notes || '', onChange: e => up('notes', e.target.value) })
-    ),
-
-    h('div', { className: 'btn-group' },
-      h('button', { className: 'btn btn-primary btn-sm', onClick: () => onSave({ ...t, id: String(Date.now()) }) }, 'Save covered call'),
-      h('button', { className: 'btn btn-sm', onClick: onCancel }, 'Cancel')
-    )
-  );
-}
-
-function WheelCycles({ trades, prices, onUpdateTrade, onAddTrade }) {
-  const [expanded, setExpanded] = useStateWC({});
-  const [ccForm, setCcForm]     = useStateWC(null);
-  const toggle = id => setExpanded(p => ({ ...p, [id]: !p[id] }));
-
-  const cycles = useMemoWC(() => {
-    // ── Which trades START a cycle ─────────────────────────────
-    // Only an assigned PUT starts a wheel cycle: shares are bought.
-    // An assigned COVERED CALL *ends* one (shares are sold), and must
-    // never be read as the start of a new lot — doing so created a
-    // phantom cycle that also counted its own premium as CC income.
-    const lots = trades
-      .filter(t => t.outcome === 'Assigned' && t.putCall !== 'C' && t.strategy !== 'Covered Call')
-      .sort((a, b) => (a.dateOpened || '').localeCompare(b.dateOpened || ''));
-
-    // ── FIFO allocation of covered calls to lots ───────────────
-    // With two lots on one ticker, every CC used to be counted against
-    // BOTH, inflating income. Each CC is now claimed by the oldest lot
-    // that was open when the CC was written; once a lot's shares are
-    // called away it stops claiming further calls.
-    const claimed = {};                    // lot id -> array of CCs
-    lots.forEach(l => { claimed[l.id] = []; });
-    const closedLot = {};                  // lot id -> true once called away
-
-    trades
-      .filter(x => x.strategy === 'Covered Call' && x.ticker)
-      .sort((a, b) => (a.dateOpened || '').localeCompare(b.dateOpened || ''))
-      .forEach(cc => {
-        const cand = lots.filter(l =>
-          l.ticker === cc.ticker &&
-          (cc.dateOpened || '') >= (l.dateOpened || '') &&
-          !closedLot[l.id]
-        );
-        if (!cand.length) return;
-        const lot = cand[0];               // oldest still-open lot
-        claimed[lot.id].push(cc);
-        if (cc.outcome === 'Assigned') closedLot[lot.id] = true;
-      });
-
-    return lots.map(t => {
-      const ticker = t.ticker;
-      const mine = claimed[t.id] || [];
-      const ccs     = mine.filter(x => x.outcome !== 'Open');
-      const openCcs = mine.filter(x => x.outcome === 'Open');
-
-      // CC income: a CC's contribution to the cycle is the premium kept.
-      // calcMetrics.pnl is null for an *assigned* CC (shares called away),
-      // but you still keep that premium — so compute it explicitly:
-      //   Expired Worthless / Assigned → full premium kept
-      //   Bought Back / Closed         → premium minus buyback cost
-      const ccIncome = ccs.reduce((s, c) => {
-        const cPrem = parseFloat(c.premiumReceived) || 0;
-        const cCon  = parseInt(c.contracts) || 1;
-        const cClose = parseFloat(c.closePrice) || 0;
-        let cPnl;
-        if (c.outcome === 'Expired Worthless' || c.outcome === 'Assigned') {
-          cPnl = cPrem * 100 * cCon;               // premium kept in full
-        } else if (c.outcome === 'Bought Back' || c.outcome === 'Closed Profit' || c.outcome === 'Closed Loss') {
-          cPnl = (cPrem - cClose) * 100 * cCon;    // premium minus cost to close
-        } else {
-          cPnl = 0;
-        }
-        return s + cPnl;
-      }, 0);
-      const strike   = parseFloat(t.strike1) || 0;
-      const prem     = parseFloat(t.premiumReceived) || 0;
-      const con      = parseInt(t.contracts) || 1;
-      const costBasis = strike - prem;
-      const price     = prices[ticker];
-      const calledAwayCc = ccs.filter(x => x.outcome === 'Assigned')[0] || null;
-      // Once the shares are called away there is no position left to
-      // mark to market — showing an "unrealised" figure on a closed
-      // cycle overstated it badly.
-      const unrealized = (!calledAwayCc && price != null)
-        ? (price - strike) * 100 * con : null;
-      const putPnl    = prem * 100 * con;
-
-      const calledAway = calledAwayCc;
-      const isComplete = !!calledAway;
-      const salePrice  = calledAway ? parseFloat(calledAway.strike1) || 0 : 0;
-      const completePnl = isComplete
-        ? putPnl + ccIncome + (salePrice - strike) * 100 * con
-        : null;
-
-      const startDate = fd(t.dateOpened);
-      const endDate   = calledAway ? fd(calledAway.dateClosed || calledAway.expiry) : null;
-      const totalDays = startDate && endDate
-        ? daysBetween(startDate, endDate)
-        : startDate ? __dtLeft(today(), startDate) : 0;
-
-      const cap = strike * 100 * con;
-      const annRocar = completePnl != null && totalDays > 0
-        ? (completePnl / cap) * (365 / totalDays) : null;
-
-      const legs = [
-        { type: 'Put', date: t.dateOpened, strike: t.strike1, prem, pnl: putPnl, expiry: t.expiry, outcome: 'Assigned' },
-        ...ccs.map(c => ({ type: 'CC', date: c.dateOpened, strike: c.strike1, prem: parseFloat(c.premiumReceived) || 0, pnl: calcMetrics(c).pnl, expiry: c.expiry, outcome: c.outcome })),
-        ...openCcs.map(c => ({ type: 'CC (open)', date: c.dateOpened, strike: c.strike1, prem: parseFloat(c.premiumReceived) || 0, pnl: null, expiry: c.expiry, outcome: 'Open' }))
-      ];
-
-      return { ...t, costBasis, ccIncome, unrealized, putPnl, completePnl, isComplete, legs, totalDays, annRocar, cap, openCcs };
-    });
-  }, [trades, prices]);
-
-  const active   = cycles.filter(c => !c.isComplete);
-  const complete = cycles.filter(c => c.isComplete);
-
-  const CycleCard = ({ c, muted }) => {
-    const exp  = expanded[c.id];
-    const price = prices[c.ticker];
-    const recov = c.unrealized != null && c.unrealized < 0 && c.ccIncome > 0
-      ? Math.min(1, c.ccIncome / Math.abs(c.unrealized)) : 0;
-    const netPnl = c.isComplete ? c.completePnl
-      : (c.putPnl + c.ccIncome + (c.unrealized || 0));
-
-    return h('div', { className: muted ? 'card-muted' : 'card' },
-      h('div', { className: 'cycle-header' },
-        h('div', { className: 'cycle-title' },
-          h('span', { className: 'ticker' }, c.ticker),
-          c.isComplete
-            ? h('span', { className: 'badge badge-green' }, 'Cycle complete')
-            : h('span', { className: 'badge badge-blue' }, 'Active wheel'),
-          h('span', { style: { fontSize: 11, color: 'var(--text2)' } }, 'Day ' + c.totalDays)
-        ),
-        h('div', { style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' } },
-          netPnl != null && h('span', { className: 'badge ' + (netPnl >= 0 ? 'badge-green' : 'badge-red') },
-            (netPnl >= 0 ? '+' : '') + f$(netPnl) + ' ' + (c.isComplete ? 'total' : 'so far')),
-          c.annRocar != null && h('span', { className: 'rocp' }, fp(c.annRocar) + ' ann.'),
-          h('button', { className: 'btn btn-sm', onClick: () => toggle(c.id) }, exp ? 'Collapse' : 'Details')
-        )
-      ),
-
-      h('div', { className: 'cycle-stats' },
-        h('div', null, h('span', { style: { color: 'var(--text2)' } }, 'Assigned '), h('strong', null, f$(parseFloat(c.strike1)))),
-        h('div', null, h('span', { style: { color: 'var(--text2)' } }, 'Cost basis '), h('strong', null, f$(c.costBasis, 2))),
-        price && h('div', null, h('span', { style: { color: 'var(--text2)' } }, 'Current '), h('strong', null, f$(price, 2))),
-        h('div', null, h('span', { style: { color: 'var(--text2)' } }, 'Put income '), h('strong', { className: 'pos-green' }, f$(c.putPnl))),
-        h('div', null, h('span', { style: { color: 'var(--text2)' } }, 'CC income '), h('strong', { className: 'pos-green' }, f$(c.ccIncome))),
-        c.unrealized != null && h('div', null,
-          h('span', { style: { color: 'var(--text2)' } }, 'Unrealized '),
-          h('strong', { className: c.unrealized >= 0 ? 'pos-green' : 'pos-red' }, f$(c.unrealized)))
-      ),
-
-      !c.isComplete && c.unrealized != null && c.unrealized < 0 && h('div', { className: 'prog-wrap' },
-        h('div', { className: 'prog-label' },
-          h('span', null, 'CC income recovering embedded loss'),
-          h('span', null, Math.round(recov * 100) + '%')
-        ),
-        h('div', { className: 'prog-track' },
-          h('div', { className: 'prog-fill', style: { width: (recov * 100) + '%', background: '#639922' } })
-        )
-      ),
-
-      exp && h('div', { className: 'leg-list' },
-        h('div', { className: 'sec' }, 'Legs'),
-        c.legs.map((l, i) =>
-          h('div', { key: i, className: 'leg-row' },
-            h('div', { className: 'leg-dot', style: { background: l.type === 'Put' ? '#185fa5' : l.outcome === 'Open' ? '#ef9f27' : '#1d9e75' } }),
-            h('span', { style: { minWidth: 72, fontWeight: 500 } }, l.type),
-            h('span', { style: { minWidth: 90, color: 'var(--text2)' } }, l.date || '—'),
-            h('span', { style: { minWidth: 60 } }, 'K=' + f$(parseFloat(l.strike), 2)),
-            h('span', { style: { minWidth: 55 } }, f$(l.prem * 100)),
-            l.pnl != null
-              ? h('span', { className: l.pnl >= 0 ? 'pos-green' : 'pos-red' }, (l.pnl >= 0 ? '+' : '') + f$(l.pnl))
-              : h('span', { className: 'badge badge-amber' }, 'open')
-          )
-        ),
-        !c.isComplete && h('div', { style: { marginTop: 12 } },
-          ccForm === c.id
-            ? h('div', { style: { background: 'var(--bg2)', borderRadius: 8, padding: '12px 14px' } },
-                h('div', { style: { fontWeight: 500, fontSize: 12, marginBottom: 10 } }, 'Log covered call on ' + c.ticker),
-                h(CCForm, { ticker: c.ticker, onSave: t => { onAddTrade(t); setCcForm(null); }, onCancel: () => setCcForm(null) })
-              )
-            : h('button', { className: 'btn btn-sm', onClick: () => setCcForm(c.id) },
-                h('i', { className: 'ti ti-plus', 'aria-hidden': true }), ' Log covered call')
-        )
-      )
-    );
-  };
-
-  return h('div', null,
-    active.length > 0 && h('div', null,
-      h('div', { className: 'sec' }, 'Active cycles — ' + active.length),
-      active.map(c => h(CycleCard, { key: c.id, c, muted: false }))
-    ),
-
-    complete.length > 0 && h('div', { style: { marginTop: 16 } },
-      h('div', { className: 'sec' }, 'Completed cycles — ' + complete.length),
-      complete.map(c => h(CycleCard, { key: c.id, c, muted: true }))
-    ),
-
-    !active.length && !complete.length && h('div', { className: 'empty' },
-      h('i', { className: 'ti ti-refresh', 'aria-hidden': true }),
-      h('div', null, 'No wheel cycles yet'),
-      h('div', { style: { fontSize: 12, marginTop: 6 } }, 'Log a naked put and mark it assigned to start a cycle')
-    ),
-
-    // ── Position timeline ─────────────────────────────────────
-    // Every position by ticker, weekly grid, today marker, lane-packed
-    // so overlapping same-type legs get their own row.
-    trades.length > 0 && h('div', { className: 'card', style: { marginTop: 16 } },
-      h('div', { className: 'sec' }, 'Position timeline'),
-      h(GanttChart, { trades })
-    )
-  );
-}
+ 
