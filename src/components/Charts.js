@@ -13,7 +13,9 @@ function Charts({ trades, prices }) {
   const charts   = useRefC({});
 
   const resolved = trades.filter(t => calcMetrics(t).isResolved);
-  const assigned = trades.filter(t => t.outcome === 'Assigned');
+  // Only put-assignments are share lots — an assigned covered call sold
+  // the shares, so counting it here double-booked the unrealised P&L.
+  const assigned = trades.filter(isShareLot);
 
   // Fixed trailing-12-month axis so two data points don't stretch into
   // fat bars and a meaningless straight line.
@@ -211,7 +213,7 @@ function Charts({ trades, prices }) {
       s.n++;
       if (m.isResolved && m.pnl != null) s.pnl += m.pnl;
       if (t.outcome === 'Open')     { s.open++; s.cap += deployedCapital(t); }
-      if (t.outcome === 'Assigned') { s.cap += shareCapital(t); }
+      if (isShareLot(t)) { s.cap += shareCapital(t); }
     });
     const rows = Object.keys(map).map(k => map[k]).sort((a, b) => (b.cap - a.cap) || (b.pnl - a.pnl));
     const totCap = rows.reduce((s, r) => s + r.cap, 0);
