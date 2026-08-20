@@ -124,10 +124,19 @@ function deployedCapital(t) {
   return m.cap || 0;
 }
 
+// Does this trade represent SHARES YOU NOW OWN?
+// An assigned PUT buys shares (you own them). An assigned COVERED CALL
+// sells them (they are gone). Treating both as ownership was inventing
+// phantom share lots and phantom unrealised P&L. One definition, used
+// everywhere.
+function isShareLot(t) {
+  return t.outcome === 'Assigned' && t.putCall !== 'C' && t.strategy !== 'Covered Call';
+}
+
 // Capital tied up by ASSIGNED SHARES — tracked separately so a large
 // share position (e.g. CRM) does not swamp the options-yield maths.
 function shareCapital(t) {
-  if (t.outcome !== 'Assigned') return 0;
+  if (!isShareLot(t)) return 0;
   const s1 = parseFloat(t.strike1) || 0;
   const con = parseInt(t.contracts) || 1;
   return s1 * 100 * con;
