@@ -133,6 +133,25 @@ function isShareLot(t) {
   return t.outcome === 'Assigned' && t.putCall !== 'C' && t.strategy !== 'Covered Call';
 }
 
+// Share lots you STILL HOLD, after retiring those already called away.
+// A covered call marked Assigned delivers shares; FIFO says the oldest
+// open lot on that ticker goes first. Without this, a retired lot kept
+// being marked to market and inflated unrealised P&L.
+function openShareLots(trades) {
+  const lots = (trades || []).filter(isShareLot)
+    .sort((a, b) => (a.dateOpened || '').localeCompare(b.dateOpened || ''));
+  const gone = {};
+  (trades || [])
+    .filter(x => x.strategy === 'Covered Call' && x.outcome === 'Assigned' && x.ticker)
+    .sort((a, b) => (a.dateOpened || '').localeCompare(b.dateOpened || ''))
+    .forEach(cc => {
+      const cand = lots.filter(l => l.ticker === cc.ticker &&
+        (cc.dateOpened || '') >= (l.dateOpened || '') && !gone[l.id]);
+      if (cand.length) gone[cand[0].id] = true;
+    });
+  return lots.filter(l => !gone[l.id]);
+}
+
 // Capital tied up by ASSIGNED SHARES — tracked separately so a large
 // share position (e.g. CRM) does not swamp the options-yield maths.
 function shareCapital(t) {
