@@ -21,7 +21,8 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
   const open     = trades.filter(t => t.outcome === 'Open').slice().reverse();
   // Shares actually held: assigned puts only. An assigned covered call
   // means the shares were called away, not acquired.
-  const assigned = trades.filter(isShareLot);
+  // Only lots still held; called-away lots are gone, not marked to market.
+  const assigned = openShareLots(trades);
   const tod  = today();
 
   // ── Capital at risk (merged in from the old Capital tab) ──────
