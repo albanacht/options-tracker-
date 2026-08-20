@@ -15,7 +15,8 @@ function Charts({ trades, prices }) {
   const resolved = trades.filter(t => calcMetrics(t).isResolved);
   // Only put-assignments are share lots — an assigned covered call sold
   // the shares, so counting it here double-booked the unrealised P&L.
-  const assigned = trades.filter(isShareLot);
+  // Only lots still held — retired ones are realised, not unrealised.
+  const assigned = openShareLots(trades);
 
   // Fixed trailing-12-month axis so two data points don't stretch into
   // fat bars and a meaningless straight line.
