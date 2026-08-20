@@ -15,31 +15,126 @@ function bsPrice(S, K, T, sigma, isPut) {
   if (isPut) return K * Math.exp(-r * T) * normCDF(-d2) - S * normCDF(-d1);
   return S * normCDF(d1) - K * Math.exp(-r * T) * normCDF(d2);
 }
- 
+
 function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateTrade }) {
   const [closing, setClosing] = useStateAM(null);
-  const open = trades.filter(t => t.outcome === 'Open').slice().reverse();
+  const open     = trades.filter(t => t.outcome === 'Open').slice().reverse();
+  // Shares actually held: assigned puts only. An assigned covered call
+  // means the shares were called away, not acquired.
+  const assigned = trades.filter(isShareLot);
   const tod  = today();
- 
-  if (!open.length) return h('div', { className: 'empty' },
-    h('i', { className: 'ti ti-eye', 'aria-hidden': true }),
-    h('div', null, 'No open positions'),
-    h('div', { style: { fontSize: 12, marginTop: 6 } }, 'Log a trade to start tracking')
+
+  // ── Capital at risk (merged in from the old Capital tab) ──────
+  const [reserve, setReserve] = useStateAM(() => {
+    try { const v = parseFloat(localStorage.getItem('opt_reserve')); return v > 0 ? v : 25000; }
+    catch { return 25000; }
+  });
+  const updateReserve = v => {
+    const n = parseFloat(v);
+    setReserve(isNaN(n) ? 0 : n);
+    try { localStorage.setItem('opt_reserve', String(isNaN(n) ? 0 : n)); } catch {}
+  };
+
+  let optCollateral = 0, ccCount = 0, nakedCallCount = 0;
+  open.forEach(t => {
+    const m = calcMetrics(t);
+    if (m.isCoveredCall) { ccCount++; return; }
+    if (m.isNakedCall)   { nakedCallCount++; return; }
+    optCollateral += m.cap || 0;
+  });
+
+  let shareVal = 0, shareCost = 0;
+  assigned.forEach(t => {
+    const s = parseFloat(t.strike1) || 0;
+    const con = parseInt(t.contracts) || 1;
+    shareVal  += (prices[t.ticker] || s) * 100 * con;
+    shareCost += s * 100 * con;
+  });
+
+  const committed = optCollateral + shareVal;
+  const base = reserve > 0 ? reserve : 1;
+  const util = committed / base;
+  const uc = util > 1 ? '#a32d2d' : util > 0.8 ? '#854f0b' : '#27500a';
+
+  const capitalPanel = h('div', { className: 'card', style: { marginBottom: 12 } },
+    h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 8 } },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+        h('span', { className: 'sec', style: { marginBottom: 0 } }, 'Capital deployed'),
+        h('input', {
+          type: 'number', value: reserve, step: 1000, min: 0,
+          onChange: e => updateReserve(e.target.value),
+          title: 'Your total capital base. Edit anytime — saved automatically.',
+          style: { width: 96, fontSize: 12, padding: '3px 6px' }
+        })
+      ),
+      h('span', { style: { fontWeight: 600, color: uc, fontSize: 14 } },
+        (Math.min(util, 9.99) * 100).toFixed(1) + '% used')
+    ),
+    h('div', { className: 'util-bar' },
+      h('div', { className: 'util-fill', style: { width: Math.min(util * 100, 100) + '%', background: uc } })
+    ),
+    h('div', { className: 'cap-split' },
+      h('div', null, h('span', { className: 'pos-stat-label' }, 'Options collateral '), h('strong', null, f$(optCollateral))),
+      h('div', null, h('span', { className: 'pos-stat-label' }, 'Assigned shares '), h('strong', null, f$(shareVal))),
+      h('div', null, h('span', { className: 'pos-stat-label' }, 'Dry powder '),
+        h('strong', { style: { color: base - committed > 0 ? '#27500a' : '#a32d2d' } }, f$(Math.max(0, base - committed)))),
+      shareVal > 0 && h('div', null, h('span', { className: 'pos-stat-label' }, 'Shares unrealised '),
+        h('strong', { className: shareVal - shareCost >= 0 ? 'pos-green' : 'pos-red' },
+          (shareVal - shareCost >= 0 ? '+' : '') + f$(shareVal - shareCost)))
+    ),
+    (ccCount > 0 || nakedCallCount > 0) && h('div', { style: { fontSize: 11, color: 'var(--text2)', marginTop: 8 } },
+      ccCount > 0 && (ccCount + ' covered call' + (ccCount !== 1 ? 's' : '') + ' — $0 extra collateral (shares already counted). '),
+      nakedCallCount > 0 && (nakedCallCount + ' naked call' + (nakedCallCount !== 1 ? 's' : '') + ' — unbounded risk, excluded from totals.')
+    )
   );
- 
+
+  const assignedTable = assigned.length > 0 && h('div', { className: 'card' },
+    h('div', { className: 'sec' }, 'Assigned shares — ' + assigned.length),
+    h('div', { className: 'table-wrap' },
+      h('table', null,
+        h('thead', null, h('tr', null,
+          ['Ticker','Basis','Market value','Unrealised'].map(x => h('th', { key: x }, x))
+        )),
+        h('tbody', null, assigned.map(t => {
+          const s = parseFloat(t.strike1) || 0;
+          const con = parseInt(t.contracts) || 1;
+          const mkt = (prices[t.ticker] || s) * 100 * con;
+          const pl = mkt - s * 100 * con;
+          return h('tr', { key: t.id },
+            h('td', null, h('strong', null, t.ticker)),
+            h('td', null, f$(s, 2)),
+            h('td', null, f$(mkt)),
+            h('td', { className: pl >= 0 ? 'pos-green' : 'pos-red' }, (pl >= 0 ? '+' : '') + f$(pl))
+          );
+        }))
+      )
+    )
+  );
+
+  if (!open.length) return h('div', null,
+    capitalPanel,
+    assignedTable,
+    h('div', { className: 'empty' },
+      h('i', { className: 'ti ti-eye', 'aria-hidden': true }),
+      h('div', null, 'No open positions'),
+      h('div', { style: { fontSize: 12, marginTop: 6 } }, 'Log a trade to start tracking')
+    )
+  );
+
   return h('div', null,
+    capitalPanel,
     h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 } },
       h('span', { className: 'sec' }, open.length + ' open position' + (open.length !== 1 ? 's' : '')),
       h('button', { className: 'btn btn-sm', onClick: refreshPrices, disabled: loadingPrices },
         loadingPrices ? 'Refreshing…' : '↻ Refresh prices')
     ),
- 
+
     closing && h(CloseModal, {
       trade: closing,
       onClose: () => setClosing(null),
       onSave: t => { onUpdateTrade(t); setClosing(null); }
     }),
- 
+
     open.map(t => {
       const m      = calcMetrics(t);
       const price  = prices[t.ticker];
@@ -49,10 +144,10 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
       const exp    = fd(t.expiry);
       const dLeft  = t.expiry ? daysUntilDate(t.expiry, tod) : null;
       const isS    = t.strategy && t.strategy.includes('Spread');
- 
+
       const dist   = price && s1 ? Math.abs(price - s1) / s1 : null;
       const isItm  = price && s1 && (t.putCall === 'P' ? price < s1 : price > s1);
- 
+
       // ── Black-Scholes estimated option price + theta ─────────
       // Uses stored entry IV when available; otherwise assumes a
       // conservative 25% (roughly S&P average) and flags it visually.
@@ -65,18 +160,18 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
       const iv = storedIv || 0.25;
       const T  = dLeft != null && dLeft > 0 ? dLeft / 365 : null;
       const isPutLeg = t.putCall === 'P';
- 
+
       const legVal = (K, tt) => bsPrice(price, K, tt, iv, isPutLeg);
       const netVal = (tt) => (isS && s2)
         ? legVal(s1, tt) - legVal(s2, tt)
         : legVal(s1, tt);
- 
+
       const estOpt = (price && T) ? netVal(T) : null;
       const pctOfPrem = (estOpt != null && prem > 0) ? estOpt / prem : null;
       const thetaDay = (estOpt != null && T > 1 / 365)
         ? (estOpt - netVal(T - 1 / 365)) * 100 * con
         : null;
- 
+
       // Live P&L: net BS estimate when priceable, intrinsic otherwise
       let livePnl = null;
       if (price && prem) {
@@ -93,13 +188,13 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
         livePnl = (prem - optVal) * 100 * con;
       }
       const captured = (livePnl != null && prem > 0) ? livePnl / (prem * 100 * con) : null;
- 
+
       // ── Spread doubled-loss alert ─────────────────────────────
       // Rule: close a spread in loss once its value ≈ 2× the credit
       // received (down ~1× credit). estOpt is the live net value.
       const spreadLossMult = (isS && estOpt != null && prem > 0) ? estOpt / prem : null;
       const spreadAlert = spreadLossMult != null && spreadLossMult >= 2;
- 
+
       // ── Covered-call yield (ROCAR is 0 by design — no collateral) ──
       // Meaningful CC metric = premium ÷ shares' notional value.
       const ccYield = (m.isCoveredCall && s1 > 0)
@@ -108,23 +203,23 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
       const ccYieldAnn = (ccYield != null && (parseInt(t.dte) || 0) > 0)
         ? ccYield * (365 / parseInt(t.dte))
         : null;
- 
+
       // ── Border semantics: green = deep OTM / buyback candidate,
       //    amber = normal, red = ITM ────────────────────────────
       let alertCls = 'pos-card card alert-amber';
       if (isItm || spreadAlert) alertCls = 'pos-card card alert-red';
       else if ((dist != null && dist >= 0.10) || (captured != null && captured >= 0.7))
         alertCls = 'pos-card card alert-green';
- 
+
       const priceCol = !price ? 'var(--text2)'
         : isItm ? '#a32d2d'
         : dist < 0.05 ? '#854f0b'
         : '#27500a';
- 
+
       const prem100 = prem * 100;
- 
+
       return h('div', { key: t.id, className: alertCls, style: { padding: '10px 16px', marginBottom: 8 } },
- 
+
         // ── Row 1: ticker + badges ────────────────────────────
         h('div', { className: 'pos-header', style: { marginBottom: 6 } },
           h('div', { className: 'pos-title' },
@@ -147,7 +242,7 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
               : h('span', { className: 'rocp' }, fp(m.annR) + ' ann.')
           )
         ),
- 
+
         // ── Row 2: compact strike | distance | price | est option ──
         h('div', {
           style: {
@@ -197,7 +292,7 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
           ),
           h('div', { style: { minWidth: 140 } }, h(DistBar, { t, price }))
         ),
- 
+
         // ── Row 3: stats strip ────────────────────────────────
         h('div', { className: 'pos-stats', style: { marginBottom: 6 } },
           h('div', null, h('span', { className: 'pos-stat-label' }, 'Premium '), h('strong', null, f$(prem100))),
@@ -229,15 +324,16 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
             h('strong', null, f$(prem100 * 0.8)),
             h('span', { style: { color: 'var(--text2)', fontSize: 10 } }, ' @ ' + f$(prem * 0.2, 2)))
         ),
- 
+
         t.notes && h('div', { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 6, fontStyle: 'italic' } }, t.notes),
- 
+
         h('div', { style: { display: 'flex', gap: 6 } },
           h('button', { className: 'btn btn-sm', onClick: () => setClosing(t) },
             isS ? 'Close spread' : 'Buy back / close')
         )
       );
-    })
+    }),
+
+    assignedTable
   );
 }
- 
