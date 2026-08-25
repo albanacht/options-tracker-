@@ -1,7 +1,7 @@
 function TradeForm({ onSave, initial, onCancel }) {
   const [t, setT] = useState(initial || {
     dateOpened: todayStr(), ticker: '', strategy: 'Naked Put', putCall: 'P',
-    strike1: '', strike2: '', expiry: '', dte: '30', contracts: '1',
+    strike1: '', strike2: '', strike3: '', strike4: '', expiry: '', dte: '30', contracts: '1',
     underlyingAtEntry: '', ivhv: '', iv: '', delta: '', premiumReceived: '',
     outcome: 'Open', closePrice: '', dateClosed: '', notes: ''
   });
@@ -40,6 +40,7 @@ function TradeForm({ onSave, initial, onCancel }) {
 
   const m = useMemo(() => calcMetrics(t), [t]);
   const isS = t.strategy && (t.strategy.includes('Spread') || t.strategy.includes('Condor'));
+  const isCondor = t.strategy && t.strategy.includes('Condor');
   const showClose = t.outcome !== 'Open' && t.outcome !== 'Expired Worthless'
     && t.outcome !== 'Assigned' && t.outcome !== 'Max Loss';
 
@@ -71,8 +72,12 @@ function TradeForm({ onSave, initial, onCancel }) {
       field('Ticker', 'ticker'),
       select('Strategy', 'strategy', STRATS),
       showPutCall && select('Put / Call', 'putCall', ['P', 'C']),
-      field('Strike', 'strike1', 'number', { placeholder: '285', step: '0.5' }),
-      isS && field('Strike 2 (lower leg)', 'strike2', 'number', { placeholder: '275', step: '0.5' }),
+      // An iron condor needs all four legs. Logging it as two trades
+      // double-counts capital at risk, since only one side can lose.
+      field(isCondor ? 'Short PUT strike' : 'Strike', 'strike1', 'number', { placeholder: isCondor ? '735' : '285', step: '0.5' }),
+      isS && field(isCondor ? 'Long PUT strike (below)' : 'Strike 2 (lower leg)', 'strike2', 'number', { placeholder: isCondor ? '730' : '275', step: '0.5' }),
+      isCondor && field('Short CALL strike', 'strike3', 'number', { placeholder: '800', step: '0.5' }),
+      isCondor && field('Long CALL strike (above)', 'strike4', 'number', { placeholder: '805', step: '0.5' }),
       field('Expiry date', 'expiry', 'date'),
 
       // DTE — auto-calculated, editable with a small note
@@ -92,12 +97,16 @@ function TradeForm({ onSave, initial, onCancel }) {
       field('IV/HV ratio', 'ivhv', 'number', { step: '0.01', placeholder: '1.5' }),
       field('IV % at entry (e.g. 0.35)', 'iv', 'number', { step: '0.01', placeholder: '0.35' }),
       field('Delta', 'delta', 'number', { step: '0.01', placeholder: '0.15' }),
-      field('Premium received ($)', 'premiumReceived', 'number', { step: '0.01' })
+      field(isCondor ? 'TOTAL credit, both sides ($)' : 'Premium received ($)', 'premiumReceived', 'number', { step: '0.01' })
     ),
+
+    isCondor && h('div', { style: { fontSize: 11, color: 'var(--text2)', marginTop: -6, marginBottom: 10 } },
+      'Enter the combined credit from both spreads. Max loss is the wider wing minus that credit — only one side can finish in the money.'),
 
     (t.strike1 || t.premiumReceived) && h('div', { className: 'calc-preview' },
       h('div', { className: 'calc-item' }, h('div', { className: 'calc-label' }, 'Capital at risk'), h('div', { className: 'calc-val' }, f$(m.cap))),
-      h('div', { className: 'calc-item' }, h('div', { className: 'calc-label' }, 'Break-even'), h('div', { className: 'calc-val' }, f$(m.be, 2))),
+      h('div', { className: 'calc-item' }, h('div', { className: 'calc-label' }, m.beUpper != null ? 'Break-evens' : 'Break-even'),
+        h('div', { className: 'calc-val' }, m.beUpper != null ? (f$(m.be, 0) + ' – ' + f$(m.beUpper, 0)) : f$(m.be, 2))),
       h('div', { className: 'calc-item' }, h('div', { className: 'calc-label' }, 'BE cushion'),
         h('div', { className: 'calc-val', style: { color: m.bec > 0.1 ? '#3b6d11' : m.bec > 0.05 ? '#854f0b' : '#a32d2d' } }, fp(m.bec))),
       h('div', { className: 'calc-item' }, h('div', { className: 'calc-label' }, 'Ann. ROCAR'),
