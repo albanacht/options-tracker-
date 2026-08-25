@@ -38,16 +38,32 @@ function calcMetrics(t) {
   const prem = parseFloat(t.premiumReceived) || 0;
   const s1   = parseFloat(t.strike1) || 0;
   const s2   = parseFloat(t.strike2) || 0;
+  const s3   = parseFloat(t.strike3) || 0;
+  const s4   = parseFloat(t.strike4) || 0;
   const und  = parseFloat(t.underlyingAtEntry) || 0;
   const con  = parseInt(t.contracts) || 1;
   const close = parseFloat(t.closePrice) || 0;
   const isSpread = t.strategy && (t.strategy.includes('Spread') || t.strategy.includes('Condor'));
+  const isCondor = t.strategy && t.strategy.includes('Condor');
 
-  let cap = 0, maxLoss = 0, be = 0;
+  let cap = 0, maxLoss = 0, be = 0, beUpper = null;
   const isCoveredCall = t.strategy === 'Covered Call';
   const isNakedCall = t.putCall === 'C' && !isCoveredCall && !isSpread;
 
-  if (isSpread && s1 && s2) {
+  // ── Iron condor: four legs ───────────────────────────────────
+  // strike1 = short put, strike2 = long put (below)
+  // strike3 = short call, strike4 = long call (above)
+  // Only ONE side can finish in the money, so risk is the WIDER
+  // wing minus the total credit — not the two spreads added together,
+  // which is what logging a condor as two separate trades implies.
+  if (isCondor && s1 && s2 && s3 && s4) {
+    const putWing  = Math.abs(s1 - s2);
+    const callWing = Math.abs(s4 - s3);
+    maxLoss = (Math.max(putWing, callWing) - prem) * 100 * con;
+    cap = maxLoss;
+    be      = s1 - prem;   // lower break-even
+    beUpper = s3 + prem;   // upper break-even
+  } else if (isSpread && s1 && s2) {
     const w = Math.abs(s1 - s2);
     maxLoss = (w - prem) * 100 * con;
     cap = maxLoss;
@@ -76,7 +92,11 @@ function calcMetrics(t) {
   const dte = parseInt(t.dte) || 30;
   const roc   = cap > 0 ? (prem * con * 100) / cap : 0;
   const annR  = dte > 0 ? roc * (365 / dte) : 0;
-  const bec   = und > 0 ? Math.abs(und - be) / und : 0;
+  const bec = und > 0
+    ? (beUpper != null
+        ? Math.min(Math.abs(und - be), Math.abs(beUpper - und)) / und   // nearer wing
+        : Math.abs(und - be) / und)
+    : 0;
 
   // ── Realized P&L on the OPTION leg ───────────────────────────
   // 'Assigned' used to return null, which silently zeroed the premium
@@ -106,7 +126,8 @@ function calcMetrics(t) {
   const actAnn = pnl != null && held > 0 && cap > 0 ? (pnl / cap) * (365 / held) : null;
 
   return { cap, maxLoss, be, roc, annR, bec, pnl, actAnn, isSpread, isCoveredCall, isNakedCall,
-           isAssigned, isResolved, isWin, countsWinRate, prem, con, dte };
+           isAssigned, isResolved, isWin, countsWinRate, prem, con, dte,
+           isCondor, beUpper };
 }
 
 // ── Shared analytics helpers (single source of truth) ───────────
@@ -122,6 +143,16 @@ function deployedCapital(t) {
   const m = calcMetrics(t);
   if (m.isCoveredCall || m.isNakedCall) return 0;
   return m.cap || 0;
+}
+
+// Human-readable strike string for any structure, so every tab shows
+// all four condor legs instead of silently dropping two.
+function strikeLabel(t) {
+  const a = t.strike1, b = t.strike2, c3 = t.strike3, d = t.strike4;
+  if (!a) return '—';
+  if (c3 && d) return a + '/' + b + ' P · ' + c3 + '/' + d + ' C';
+  if (b) return a + ' / ' + b;
+  return String(a);
 }
 
 // Does this trade represent SHARES YOU NOW OWN?
