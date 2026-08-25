@@ -480,7 +480,7 @@ function Charts({ trades, prices }) {
               h('td', { style: { whiteSpace: 'nowrap' } }, t.dateOpened),
               h('td', null, h('strong', null, t.ticker)),
               h('td', { style: { fontSize: 11 } }, t.strategy),
-              h('td', null, t.strike1 + (t.strike2 ? ' / ' + t.strike2 : '')),
+              h('td', { style: { fontSize: 11 } }, strikeLabel(t)),
               h('td', null, f$((parseFloat(t.premiumReceived) || 0) * 100)),
               h('td', null, h('span', { className: 'badge ' + cls, style: { fontSize: 10 } }, t.outcome)),
               h('td', { className: (m.pnl || 0) >= 0 ? 'pos-green' : 'pos-red' },
