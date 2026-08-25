@@ -260,7 +260,7 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
           h('div', null,
             h('div', { style: { fontSize: 10, color: 'var(--text2)' } }, 'STRIKE'),
             h('div', { style: { fontSize: 20, fontWeight: 700 } },
-              f$(s1, 2) + (t.strike2 ? ' / ' + f$(parseFloat(t.strike2), 2) : ''))
+              (t.strike3 ? strikeLabel(t) : f$(s1, 2) + (t.strike2 ? ' / ' + f$(parseFloat(t.strike2), 2) : '')))
           ),
           h('div', { style: { textAlign: 'center' } },
             price
