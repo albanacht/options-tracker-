@@ -74,7 +74,7 @@ function App() {
   };
 
   const exportCsv = () => {
-    const cols = ['dateOpened','ticker','strategy','putCall','strike1','strike2','expiry','dte','contracts','underlyingAtEntry','ivhv','iv','delta','premiumReceived','outcome','closePrice','dateClosed','notes'];
+    const cols = ['dateOpened','ticker','strategy','putCall','strike1','strike2','strike3','strike4','expiry','dte','contracts','underlyingAtEntry','ivhv','iv','delta','premiumReceived','outcome','closePrice','dateClosed','notes'];
     const esc = v => {
       let s = v == null ? '' : String(v);
       if (s.includes(',') || s.includes('"') || s.includes('\n')) s = '"' + s.replace(/"/g, '""') + '"';
@@ -159,7 +159,7 @@ function App() {
                   h('td', { style: { whiteSpace: 'nowrap' } }, t.dateOpened),
                   h('td', null, h('strong', null, t.ticker)),
                   h('td', { style: { fontSize: 11 } }, t.strategy),
-                  h('td', null, t.strike1 + (t.strike2 ? ' / ' + t.strike2 : '')),
+                  h('td', { style: { fontSize: 11 } }, strikeLabel(t)),
                   h('td', null, f$((parseFloat(t.premiumReceived) || 0) * 100)),
                   h('td', null, h('span', { className: 'rocp' }, fp(m.annR))),
                   h('td', null, h('span', { className: 'badge ' + statusCls, style: { fontSize: 10 } }, t.outcome)),
