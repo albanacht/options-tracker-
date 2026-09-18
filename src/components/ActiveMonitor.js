@@ -217,7 +217,8 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
         : dist < 0.05 ? '#854f0b'
         : '#27500a';
 
-      const prem100 = prem * 100;
+      // Whole-position premium: per-share x 100 x contracts.
+      const prem100 = prem * 100 * con;
 
       return h('div', { key: t.id, className: alertCls, style: { padding: '10px 16px', marginBottom: 8 } },
 
@@ -226,7 +227,8 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
           h('div', { className: 'pos-title' },
             h('span', { className: 'ticker', style: { fontSize: 16, fontWeight: 600 } }, t.ticker),
             h('span', { className: 'badge badge-gray' }, t.strategy),
-            h('span', { className: 'badge badge-blue' }, t.putCall === 'P' ? 'Put' : 'Call')
+            h('span', { className: 'badge badge-blue' }, t.putCall === 'P' ? 'Put' : 'Call'),
+            con > 1 && h('span', { className: 'badge badge-amber' }, con + ' contracts')
           ),
           h('div', { className: 'pos-badges' },
             dLeft != null && h('span', {
@@ -315,7 +317,7 @@ function ActiveMonitor({ trades, prices, loadingPrices, refreshPrices, onUpdateT
             h('span', { className: 'pos-stat-label' }, 'Spread now '),
             h('strong', { style: { color: spreadAlert ? '#a32d2d' : 'var(--text)' } },
               (ivAssumed ? '~' : '') + f$(estOpt * 100 * con)),
-            h('span', { style: { color: 'var(--text2)', fontSize: 10 } }, ' vs ' + f$(prem100 * con) + ' credit')),
+            h('span', { style: { color: 'var(--text2)', fontSize: 10 } }, ' vs ' + f$(prem100) + ' credit')),
           h('div', null,
             h('span', { className: 'pos-stat-label' }, '50% '),
             h('strong', null, f$(prem100 * 0.5)),
