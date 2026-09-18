@@ -155,6 +155,16 @@ function strikeLabel(t) {
   return String(a);
 }
 
+// Total premium for the WHOLE position, in dollars.
+// Premium is quoted per share; a contract is 100 shares. Displaying
+// prem x 100 while ignoring contracts understated every multi-contract
+// trade in the tables.
+function premTotal(t) {
+  const prem = parseFloat(t.premiumReceived) || 0;
+  const con = parseInt(t.contracts) || 1;
+  return prem * 100 * con;
+}
+
 // Does this trade represent SHARES YOU NOW OWN?
 // An assigned PUT buys shares (you own them). An assigned COVERED CALL
 // sells them (they are gone). Treating both as ownership was inventing
