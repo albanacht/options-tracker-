@@ -10,15 +10,23 @@ function CloseModal({ trade, onClose, onSave }) {
   const con  = parseInt(trade.contracts) || 1;
   const pnl  = (prem - cp) * 100 * con;
   const isS  = trade.strategy && trade.strategy.includes('Spread');
+  // Assignment and worthless expiry were missing here, so a put that got
+  // assigned could only be logged as a buyback — which invents a loss and
+  // never creates the share lot. Both belong on every single-leg position.
   const outcomes = isS
-    ? ['Closed Profit', 'Closed Loss', 'Max Loss']
-    : ['Bought Back', 'Closed Loss'];
+    ? ['Closed Profit', 'Closed Loss', 'Max Loss', 'Expired Worthless']
+    : ['Bought Back', 'Closed Loss', 'Assigned', 'Expired Worthless'];
+
+  // No cash changes hands on the option itself for these two — you keep
+  // the whole premium, so there is no buyback price to enter.
+  const noPrice = outcome === 'Assigned' || outcome === 'Expired Worthless';
+  const keptPnl = prem * 100 * con;
 
   return h('div', { className: 'modal-overlay' },
     h('div', { className: 'modal-box' },
       h('div', { className: 'modal-title' }, 'Close ' + trade.ticker + ' — ' + trade.strategy),
       h('div', { className: 'form-grid' },
-        h('div', { className: 'field' },
+        !noPrice && h('div', { className: 'field' },
           h('label', null, isS ? 'Spread close price ($)' : 'Buyback price ($)'),
           h('input', { type: 'number', step: '0.01', placeholder: '0.05', value: price, onChange: e => setPrice(e.target.value), autoFocus: true })
         ),
@@ -33,13 +41,25 @@ function CloseModal({ trade, onClose, onSave }) {
           )
         )
       ),
-      price && h('div', { className: 'modal-pnl' },
+      noPrice && h('div', { className: 'modal-pnl' },
+        h('span', { style: { color: 'var(--text2)' } },
+          outcome === 'Assigned' ? 'Premium kept (shares acquired at strike)' : 'Premium kept'),
+        h('span', { style: { fontWeight: 500, color: '#27500a' } }, '+' + f$(keptPnl))
+      ),
+
+      outcome === 'Assigned' && h('div', { style: { fontSize: 11, color: 'var(--text2)', marginBottom: 12, lineHeight: 1.5 } },
+        'Logs ' + (con * 100) + ' shares of ' + trade.ticker + ' at $' + trade.strike1 +
+        '. Set the date to the day you were actually assigned \u2014 early assignment is fine, ' +
+        'the expiry is ignored. The lot then appears on the Wheel tab.'),
+
+      !noPrice && price && h('div', { className: 'modal-pnl' },
         h('span', { style: { color: 'var(--text2)' } }, 'Realized P&L'),
         h('span', { style: { fontWeight: 500, color: pnl >= 0 ? '#27500a' : '#791f1f' } },
           (pnl >= 0 ? '+' : '') + f$(pnl))
       ),
       h('div', { className: 'btn-group' },
-        h('button', { className: 'btn btn-primary', onClick: () => onSave({ ...trade, outcome, closePrice: price, dateClosed: date }) }, 'Confirm close'),
+        h('button', { className: 'btn btn-primary', onClick: () => onSave({ ...trade, outcome, closePrice: noPrice ? '' : price, dateClosed: date }) },
+          outcome === 'Assigned' ? 'Confirm assignment' : 'Confirm close'),
         h('button', { className: 'btn', onClick: onClose }, 'Cancel')
       )
     )
