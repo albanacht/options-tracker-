@@ -279,6 +279,95 @@ const Store = {
   setTrades(t)   { try { localStorage.setItem('opt_trades_v3', JSON.stringify(t)); } catch {} },
 };
 
+// ── Durable file storage (File System Access API) ───────────────
+// localStorage is a browser cache: clearing site data wipes it, and it
+// never leaves the one browser. FileStore writes every change straight
+// into a real file you choose — put it in a Drive/Dropbox folder and you
+// get cloud backup and version history for free. localStorage is kept as
+// a mirror so nothing breaks on browsers without the API (Firefox, Safari).
+const FileStore = {
+  handle: null,
+  supported: (typeof window !== 'undefined') && ('showSaveFilePicker' in window),
+
+  // The file handle itself is persisted in IndexedDB so the link survives
+  // a page reload; only the permission needs re-granting each session.
+  _idb() {
+    return new Promise((res, rej) => {
+      const r = indexedDB.open('opt_fs', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('h');
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+  },
+  async _get() {
+    try {
+      const db = await this._idb();
+      return await new Promise(res => {
+        const t = db.transaction('h', 'readonly').objectStore('h').get('file');
+        t.onsuccess = () => res(t.result || null);
+        t.onerror = () => res(null);
+      });
+    } catch { return null; }
+  },
+  async _put(h) {
+    try {
+      const db = await this._idb();
+      db.transaction('h', 'readwrite').objectStore('h').put(h, 'file');
+    } catch {}
+  },
+
+  async restore() {
+    if (!this.supported) return null;
+    const h = await this._get();
+    if (!h) return null;
+    try {
+      const p = await h.queryPermission({ mode: 'readwrite' });
+      if (p === 'granted') { this.handle = h; return h; }
+      this.pending = h;          // needs a click to re-grant
+    } catch {}
+    return null;
+  },
+  async regrant() {
+    const h = this.pending || await this._get();
+    if (!h) return false;
+    try {
+      if (await h.requestPermission({ mode: 'readwrite' }) === 'granted') {
+        this.handle = h; this.pending = null; return true;
+      }
+    } catch {}
+    return false;
+  },
+  async pick() {
+    if (!this.supported) return false;
+    try {
+      const h = await window.showSaveFilePicker({
+        suggestedName: 'options-tracker.json',
+        types: [{ description: 'Trade data', accept: { 'application/json': ['.json'] } }]
+      });
+      this.handle = h; await this._put(h); return true;
+    } catch { return false; }   // user cancelled
+  },
+  async read() {
+    if (!this.handle) return null;
+    try {
+      const txt = await (await this.handle.getFile()).text();
+      if (!txt.trim()) return null;
+      const d = JSON.parse(txt);
+      return Array.isArray(d) ? d : (Array.isArray(d.trades) ? d.trades : null);
+    } catch { return null; }
+  },
+  async write(trades) {
+    if (!this.handle) return false;
+    try {
+      const w = await this.handle.createWritable();
+      await w.write(JSON.stringify(
+        { savedAt: new Date().toISOString(), tradeCount: trades.length, trades }, null, 2));
+      await w.close(); return true;
+    } catch { return false; }
+  },
+  name() { return this.handle ? this.handle.name : null; }
+};
+
 // ── Distance bar color ──────────────────────────────────────────
 function distCol(pct) {
   return pct > 0.15 ? '#3b6d11' : pct > 0.05 ? '#854f0b' : '#a32d2d';
