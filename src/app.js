@@ -13,7 +13,56 @@ function App() {
   const [prices,    setPrices]    = useState({});
   const [loading,   setLoading]   = useState(false);
 
-  useEffect(() => Store.setTrades(trades),    [trades]);
+  // ── Durable storage ──────────────────────────────────────────
+  // 'none' = localStorage only, 'connected' = writing to your file,
+  // 'needs-permission' = file remembered but the browser wants a click.
+  const [fileName,  setFileName]  = useState(null);
+  const [fileState, setFileState] = useState('none');
+  const [hydrated,  setHydrated]  = useState(false);
+
+  // Re-link the data file on load and prefer whatever it holds — the file
+  // is the source of truth, localStorage is only a fallback mirror.
+  useEffect(() => {
+    (async () => {
+      if (!FileStore.supported) { setHydrated(true); return; }
+      const h = await FileStore.restore();
+      if (h) {
+        const fromFile = await FileStore.read();
+        if (fromFile && fromFile.length) setTrades(fromFile);
+        setFileName(FileStore.name());
+        setFileState('connected');
+      } else if (FileStore.pending) {
+        setFileName(FileStore.pending.name);
+        setFileState('needs-permission');
+      }
+      setHydrated(true);
+    })();
+  }, []);
+
+  // Every change lands in both places. The file write is what survives
+  // clearing site data; hydrated guards against overwriting the file with
+  // an empty localStorage before the initial read has finished.
+  useEffect(() => {
+    Store.setTrades(trades);
+    if (hydrated && FileStore.handle) FileStore.write(trades);
+  }, [trades, hydrated]);
+
+  const connectFile = async () => {
+    if (fileState === 'needs-permission') {
+      if (await FileStore.regrant()) {
+        const fromFile = await FileStore.read();
+        if (fromFile && fromFile.length) setTrades(fromFile);
+        setFileName(FileStore.name());
+        setFileState('connected');
+      }
+      return;
+    }
+    if (await FileStore.pick()) {
+      setFileName(FileStore.name());
+      setFileState('connected');
+      await FileStore.write(trades);
+    }
+  };
 
   const saveTrade = t => {
     setTrades(p => {
@@ -117,7 +166,27 @@ function App() {
         h('label', { className: 'btn btn-sm', style: { cursor: 'pointer' }, title: 'Restore from a JSON export' },
           'Import',
           h('input', { type: 'file', accept: '.json,application/json', onChange: importJson, style: { display: 'none' } })
-        )
+        ),
+
+        FileStore.supported && (
+          fileState === 'connected'
+            ? h('span', {
+                className: 'badge badge-green',
+                title: 'Every change is written to ' + fileName + '. Clearing your browser no longer loses anything.'
+              }, '\u25cf saving to ' + fileName)
+            : h('button', {
+                className: 'btn btn-sm ' + (fileState === 'needs-permission' ? 'btn-primary' : ''),
+                onClick: connectFile,
+                title: fileState === 'needs-permission'
+                  ? 'Your data file is remembered — click to re-grant access for this session'
+                  : 'Pick a file (put it in Drive or Dropbox) and every change saves there automatically'
+              }, fileState === 'needs-permission' ? 'Reconnect ' + fileName : 'Connect data file')
+        ),
+
+        !FileStore.supported && h('span', {
+          className: 'badge badge-amber',
+          title: 'File saving needs Chrome or Edge. Export regularly on this browser.'
+        }, 'browser storage only')
       )
     ),
 
